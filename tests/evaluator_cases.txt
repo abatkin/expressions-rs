@@ -1,0 +1,24 @@
+# Evaluator test cases: one per line as "<expr> => <expected_string>"
+# Blank lines and lines starting with # or // are ignored.
+
+1 => 1
+true => true
+false => false
+true || false => true
+true && false => false
+!false => true
+
+1 + 2 * 3 => 7
+(1 + 2) * 3 => 9
+10 / 2 => 5
+10 % 3 => 1
+2 ^ 3 => 8
+
+'x' + 'y' => xy
+
+x => 10
+truth || false => true
+math.add(2, 3) => 5
+
+"1" + "1" => 11
+("1" + "2" + "3") + "4" => 1234

@@ -277,5 +277,27 @@ mod tests {
         let v = ev.evaluate(&parse("math.add(2, 3)").unwrap()).unwrap();
         match v { Atom::Float(f) => assert!((f - 5.0).abs() < 1e-9), _ => panic!("expected float") }
     }
+
+    #[test]
+    fn eval_from_file_cases() {
+        // Load test cases file at compile time
+        const CASES: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/evaluator_cases.txt"));
+        let ev = Evaluator::new(MockResolver::new());
+        for (idx, raw_line) in CASES.lines().enumerate() {
+            let line_no = idx + 1;
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with("//") { continue; }
+            let parts: Vec<&str> = line.splitn(2, "=>").collect();
+            assert!(parts.len() == 2, "Invalid test case format on line {}: '{}'", line_no, raw_line);
+            let expr_src = parts[0].trim();
+            let expected_str = parts[1].trim();
+
+            let expr = parse(expr_src).expect(&format!("Failed to parse expression on line {}: '{}'", line_no, expr_src));
+            let actual_atom = ev.evaluate(&expr).expect(&format!("Evaluation failed on line {} for expr '{}': parsed: {:?}", line_no, expr_src, expr));
+            let actual_str = actual_atom.as_str().expect("Atom should always be representable as string");
+
+            assert_eq!(actual_str, expected_str, "Mismatch on line {} for expr '{}': got '{}', expected '{}'", line_no, expr_src, actual_str, expected_str);
+        }
+    }
 }
 
