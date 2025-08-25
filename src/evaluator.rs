@@ -428,14 +428,14 @@ mod tests {
         assert_eq!(s2, "x is 10");
 
         // multiple interpolations
-        let s3 = ev.evaluate_interpolated("${'A'}-").unwrap();
-        assert_eq!(s3, "A-");
-        // let s3 = ev.evaluate_interpolated("${'A'}-${math.add(2,3)}-${truth}").unwrap();
-        // assert_eq!(s3, "A-5-true");
+        // let s3 = ev.evaluate_interpolated("${'A'}-").unwrap();
+        // assert_eq!(s3, "A-");
+        let s3 = ev.evaluate_interpolated("${'A'}-${math.add(2,3)}-${truth}").unwrap();
+        assert_eq!(s3, "A-5-true");
 
         // ensure braces inside strings are handled
-        // let s4 = ev.evaluate_interpolated("${'curly } brace'} done").unwrap();
-        // assert_eq!(s4, "curly } brace done");
+        let s4 = ev.evaluate_interpolated("${'curly } brace'} done").unwrap();
+        assert_eq!(s4, "curly } brace done");
 
         // missing closing brace should error
         match ev.evaluate_interpolated("bad ${1+2") {

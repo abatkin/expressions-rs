@@ -248,8 +248,10 @@ pub fn parse(input: &str) -> Result<Expr, String> {
     match parser().parse(input).into_result() {
         Ok(ast) => Ok(ast),
         Err(errs) => {
-            let msg = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-            Err(msg)
+            let joined = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+            let snippet: String = input.chars().take(80).collect();
+            let msg = if joined.trim().is_empty() { "parse error".to_string() } else { joined };
+            Err(format!("{} (near: '{}')", msg, snippet))
         }
     }
 }
@@ -257,20 +259,52 @@ pub fn parse(input: &str) -> Result<Expr, String> {
 // Parse an expression that must be terminated by a closing '}' and return
 // the parsed Expr along with the number of bytes consumed (including the '}').
 pub fn parse_in_braces(input: &str) -> Result<(Expr, usize), String> {
-    let (_spacer, expr) = expr_and_spacer();
-    // Parse: expr '}' and return (expr, bytes_consumed_including_rcurly)
-    let parser = expr.clone().then(just('}')).map_with(|(e, _rc), extra| {
-        let sp = extra.span();
-        (e, sp.end)
-    });
-
-    match parser.parse(input).into_result() {
-        Ok(res) => Ok(res),
-        Err(errs) => {
-            let msg = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-            Err(msg)
+    // Find the first unescaped, non-string '}' so we can support suffix text after it.
+    let mut in_sq = false;
+    let mut in_dq = false;
+    let mut escape = false;
+    for (i, ch) in input.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        match ch {
+            '\\' => {
+                if in_sq || in_dq {
+                    escape = true;
+                }
+            }
+            '\'' => {
+                if !in_dq {
+                    in_sq = !in_sq;
+                }
+            }
+            '"' => {
+                if !in_sq {
+                    in_dq = !in_dq;
+                }
+            }
+            '}' => {
+                if !in_sq && !in_dq {
+                    // Parse everything before the closing brace as a full expression
+                    let expr_src = &input[..i];
+                    let (_spacer, expr) = expr_and_spacer();
+                    let p = expr.clone().then_ignore(end());
+                    match p.parse(expr_src).into_result() {
+                        Ok(ast) => return Ok((ast, i + 1)),
+                        Err(errs) => {
+                            let joined = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+                            let snippet: String = expr_src.chars().take(80).collect();
+                            let msg = if joined.trim().is_empty() { "parse error".to_string() } else { joined };
+                            return Err(format!("{} inside interpolation (near: '{}')", msg, snippet));
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
+    Err("missing closing '}' for interpolation".to_string())
 }
 
 #[cfg(test)]
@@ -312,5 +346,14 @@ mod tests {
         let ast = parse("foo.bar(baz, 1+2).qux").unwrap();
         // Just check it parses
         let _ = ast;
+    }
+
+    #[test]
+    fn parse_in_braces_allows_suffix() {
+        let res = parse_in_braces("'A'}-");
+        assert!(res.is_ok(), "parse_in_braces failed: {:?}", res);
+        let (expr, consumed) = res.unwrap();
+        assert_eq!(consumed, 4, "consumed should include string and '}}'");
+        assert_eq!(expr, Expr::Basic(Atom::Str("A".into())));
     }
 }
