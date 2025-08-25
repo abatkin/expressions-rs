@@ -2,6 +2,14 @@
 name = "expressions"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "A small expression language with variables, function calls, simple types and common operators"
+repository = "https://github.com/abatkin/expressions-rs"
+readme = "README.md"
+authors = ["Adam Batkin <adam@batkin.net>"]
+keywords = ["expression"]
+categories = ["template-engine", "compilers", "parser-implementations"]
+
 
 [dependencies]
 chumsky = "0.10"
