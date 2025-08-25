@@ -95,7 +95,7 @@ impl<R: VariableResolver> Evaluator<R> {
     pub fn evaluate_string(&self, input: &str) -> Result<Atom, EvalError> {
         let expr = parse(input).map_err(|e| EvalError::EvaluationFailed(format!("parse error: {}", e)))?;
         let result = self.evaluate(&expr).map_err(|e| EvalError::EvaluationFailed(format!("evaluation error: {}", e)))?;
-        return Ok(result);
+        Ok(result)
     }
 
     fn evaluate(&self, expr: &Expr) -> Result<Atom, EvalError> {

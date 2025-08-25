@@ -104,12 +104,12 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
     )));
 
     let string_sq = just('\'')
-        .ignore_then(choice((escape.clone(), any().filter(|c: &char| *c != '\\' && *c != '\'' && *c != '\n'))).repeated().collect::<String>())
+        .ignore_then(choice((escape, any().filter(|c: &char| *c != '\\' && *c != '\'' && *c != '\n'))).repeated().collect::<String>())
         .then_ignore(just('\''))
         .map(Atom::Str);
 
     let string_dq = just('"')
-        .ignore_then(choice((escape.clone(), any().filter(|c: &char| *c != '\\' && *c != '"' && *c != '\n'))).repeated().collect::<String>())
+        .ignore_then(choice((escape, any().filter(|c: &char| *c != '\\' && *c != '"' && *c != '\n'))).repeated().collect::<String>())
         .then_ignore(just('"'))
         .map(Atom::Str);
 
@@ -129,12 +129,12 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
         // Postfix: function call (single) after a dotted path
         let args = expr
             .clone()
-            .separated_by(just(',').padded_by(spacer.clone()))
+            .separated_by(just(',').padded_by(spacer))
             .allow_trailing()
             .collect::<Vec<_>>()
-            .delimited_by(just('(').padded_by(spacer.clone()), just(')').padded_by(spacer.clone()));
+            .delimited_by(just('(').padded_by(spacer), just(')').padded_by(spacer));
 
-        let path_or_call = path.clone().then(args.or_not()).map(|(p, maybe_args)| match maybe_args {
+        let path_or_call = path.then(args.or_not()).map(|(p, maybe_args)| match maybe_args {
             Some(a) => Expr::Call { callee: Box::new(Expr::Path(p)), args: a },
             None => Expr::Path(p),
         });
@@ -150,18 +150,18 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
         });
 
         let primary = choice((
-            choice((string_sq.clone(), string_dq.clone(), number.clone(), boolean.clone())).map(Expr::Basic),
+            choice((string_sq, string_dq, number, boolean.clone())).map(Expr::Basic),
             path_call_and_members,
-            expr.delimited_by(just('(').padded_by(spacer.clone()), just(')').padded_by(spacer.clone())),
+            expr.delimited_by(just('(').padded_by(spacer), just(')').padded_by(spacer)),
         ))
-        .padded_by(spacer.clone());
+        .padded_by(spacer);
 
         // Unary '!'
         let unary = just('!').repeated().foldr(primary, |_bang, rhs| Expr::Unary { op: UnaryOp::Not, expr: Box::new(rhs) });
 
         // Exponentiation '^' (right-assoc) using recursion
         let pow = recursive(|pow| {
-            unary.clone().then(just('^').padded_by(spacer.clone()).ignore_then(pow).or_not()).map(|(lhs, rhs)| match rhs {
+            unary.clone().then(just('^').padded_by(spacer).ignore_then(pow).or_not()).map(|(lhs, rhs)| match rhs {
                 Some(r) => Expr::Binary {
                     op: BinaryOp::Pow,
                     left: Box::new(lhs),
@@ -172,7 +172,7 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
         });
 
         let mul_div_mod = pow.clone().foldl(
-            choice((just('*').to(BinaryOp::Mul), just('/').to(BinaryOp::Div), just('%').to(BinaryOp::Mod))).padded_by(spacer.clone()).then(pow).repeated(),
+            choice((just('*').to(BinaryOp::Mul), just('/').to(BinaryOp::Div), just('%').to(BinaryOp::Mod))).padded_by(spacer).then(pow).repeated(),
             |lhs, (op, rhs)| Expr::Binary {
                 op,
                 left: Box::new(lhs),
@@ -182,7 +182,7 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
 
         let add_sub = mul_div_mod
             .clone()
-            .foldl(choice((just('+').to(BinaryOp::Add), just('-').to(BinaryOp::Sub))).padded_by(spacer.clone()).then(mul_div_mod).repeated(), |lhs, (op, rhs)| {
+            .foldl(choice((just('+').to(BinaryOp::Add), just('-').to(BinaryOp::Sub))).padded_by(spacer).then(mul_div_mod).repeated(), |lhs, (op, rhs)| {
                 Expr::Binary {
                     op,
                     left: Box::new(lhs),
@@ -192,7 +192,7 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
 
         let cmp = add_sub.clone().foldl(
             choice((just("<=").to(BinaryOp::Le), just(">=").to(BinaryOp::Ge), just('<').to(BinaryOp::Lt), just('>').to(BinaryOp::Gt)))
-                .padded_by(spacer.clone())
+                .padded_by(spacer)
                 .then(add_sub)
                 .repeated(),
             |lhs, (op, rhs)| Expr::Binary {
@@ -204,7 +204,7 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
 
         let eq = cmp
             .clone()
-            .foldl(choice((just("==").to(BinaryOp::Eq), just("!=").to(BinaryOp::Ne))).padded_by(spacer.clone()).then(cmp).repeated(), |lhs, (op, rhs)| {
+            .foldl(choice((just("==").to(BinaryOp::Eq), just("!=").to(BinaryOp::Ne))).padded_by(spacer).then(cmp).repeated(), |lhs, (op, rhs)| {
                 Expr::Binary {
                     op,
                     left: Box::new(lhs),
@@ -212,19 +212,19 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
                 }
             });
 
-        let and = eq.clone().foldl(just("&&").to(BinaryOp::And).padded_by(spacer.clone()).then(eq).repeated(), |lhs, (op, rhs)| Expr::Binary {
+        let and = eq.clone().foldl(just("&&").to(BinaryOp::And).padded_by(spacer).then(eq).repeated(), |lhs, (op, rhs)| Expr::Binary {
             op,
             left: Box::new(lhs),
             right: Box::new(rhs),
         });
 
-        let or = and.clone().foldl(just("||").to(BinaryOp::Or).padded_by(spacer.clone()).then(and).repeated(), |lhs, (op, rhs)| Expr::Binary {
+        let or = and.clone().foldl(just("||").to(BinaryOp::Or).padded_by(spacer).then(and).repeated(), |lhs, (op, rhs)| Expr::Binary {
             op,
             left: Box::new(lhs),
             right: Box::new(rhs),
         });
 
-        or.padded_by(spacer.clone())
+        or.padded_by(spacer)
     });
 
     (spacer, expr)
