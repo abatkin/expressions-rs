@@ -24,12 +24,12 @@ impl Atom {
     pub fn as_float(&self) -> Option<f64> {
         match self { Atom::Float(f) => Some(*f), _ => None }
     }
-    pub fn as_str(&self) -> Option<String> {
+    pub fn as_str(&self) -> String {
         match self {
-            Atom::Str(s) => Some(s.clone()),
-            Atom::Int(i) => Some(i.to_string()),
-            Atom::Float(f) => Some(f.to_string()),
-            Atom::Bool(b) => Some(b.to_string()),
+            Atom::Str(s) => s.clone(),
+            Atom::Int(i) => i.to_string(),
+            Atom::Float(f) => f.to_string(),
+            Atom::Bool(b) => b.to_string(),
         }
     }
     pub fn to_float_lossy(&self) -> Option<f64> {
@@ -70,7 +70,10 @@ pub enum BinaryOp {
     Pow,
 }
 
-pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
+fn expr_and_spacer<'src>() -> (
+    impl Parser<'src, &'src str, ()> + Clone,
+    impl Parser<'src, &'src str, Expr> + Clone,
+) {
     // Whitespace and comments
     let line_comment = just("//")
         .ignore_then(any().filter(|c: &char| *c != '\n').repeated())
@@ -168,7 +171,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
         });
 
         let member_chain = just('.')
-            .ignore_then(ident.clone())
+            .ignore_then(text::ident().map(|s: &str| s.to_string()))
             .repeated()
             .collect::<Vec<_>>();
 
@@ -260,6 +263,12 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
         or.padded_by(spacer.clone())
     });
 
+    (spacer, expr)
+}
+
+pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
+    let (spacer, expr) = expr_and_spacer();
+
     // Allow multiple expressions separated by whitespace/comments and take the last one
     let program = spacer.clone()
         .ignore_then(expr.clone())
@@ -277,6 +286,32 @@ pub fn parse(input: &str) -> Result<Expr, String> {
         Ok(ast) => Ok(ast),
         Err(errs) => {
             let msg = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+            Err(msg)
+        }
+    }
+}
+
+// Parse an expression that must be terminated by a closing '}' and return
+// the parsed Expr along with the number of bytes consumed (including the '}').
+pub fn parse_in_braces(input: &str) -> Result<(Expr, usize), String> {
+    let (spacer, expr) = expr_and_spacer();
+    // Parse: expr '}' and return (expr, bytes_consumed_including_rcurly)
+    let parser = expr
+        .clone()
+        .then(just('}'))
+        .map_with(|(e, _rc), extra| {
+            let sp = extra.span();
+            (e, sp.end)
+        });
+
+    match parser.parse(input).into_result() {
+        Ok(res) => Ok(res),
+        Err(errs) => {
+            let msg = errs
+                .into_iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
             Err(msg)
         }
     }
@@ -316,5 +351,6 @@ mod tests {
         // Just check it parses
         let _ = ast;
     }
+
 }
 

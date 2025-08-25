@@ -29,6 +29,34 @@ pub struct Evaluator<R: VariableResolver> {
 impl<R: VariableResolver> Evaluator<R> {
     pub fn new(resolver: R) -> Self { Self { resolver } }
 
+    // Evaluate a string with ${...} interpolations. Each ${...} is parsed with the
+    // chumsky parser that expects a closing '}', so no manual brace tracking is needed.
+    pub fn evaluate_interpolated(&self, input: &str) -> Result<String, EvalError> {
+        let mut out = String::new();
+        let mut rest = input;
+        while let Some(idx) = rest.find("${") {
+            // copy literal part before the interpolation
+            out.push_str(&rest[..idx]);
+            let after = &rest[idx + 2..];
+            match crate::parser::parse_in_braces(after) {
+                Ok((expr, consumed)) => {
+                    let val = self.evaluate(&expr)?;
+                    out.push_str(&val.as_str());
+                    rest = &after[consumed..];
+                }
+                Err(e) => {
+                    return Err(EvalError::FunctionError(format!(
+                        "interpolation parse error: {}",
+                        e
+                    )));
+                }
+            }
+        }
+        // copy the remainder
+        out.push_str(rest);
+        Ok(out)
+    }
+
     pub fn evaluate(&self, expr: &Expr) -> Result<Atom, EvalError> {
         match expr {
             Expr::Basic(a) => match a {
@@ -255,7 +283,7 @@ mod tests {
     fn eval_basic_expressions() {
         let ev = Evaluator::new(MockResolver::new());
         assert_eq!(ev.evaluate(&parse("1").unwrap()).unwrap(), Atom::Int(1));
-        assert_eq!(ev.evaluate(&parse("1").unwrap()).unwrap().as_str().unwrap(), "1");
+        assert_eq!(ev.evaluate(&parse("1").unwrap()).unwrap().as_str(), "1");
         assert_eq!(ev.evaluate(&parse("true").unwrap()).unwrap(), Atom::Bool(true));
         assert_eq!(ev.evaluate(&parse("true || false").unwrap()).unwrap(), Atom::Bool(true));
         assert_eq!(ev.evaluate(&parse("true && false").unwrap()).unwrap(), Atom::Bool(false));
@@ -294,9 +322,38 @@ mod tests {
 
             let expr = parse(expr_src).expect(&format!("Failed to parse expression on line {}: '{}'", line_no, expr_src));
             let actual_atom = ev.evaluate(&expr).expect(&format!("Evaluation failed on line {} for expr '{}': parsed: {:?}", line_no, expr_src, expr));
-            let actual_str = actual_atom.as_str().expect("Atom should always be representable as string");
+            let actual_str = actual_atom.as_str();
 
             assert_eq!(actual_str, expected_str, "Mismatch on line {} for expr '{}': got '{}', expected '{}'", line_no, expr_src, actual_str, expected_str);
+        }
+    }
+
+    #[test]
+    fn eval_interpolated_strings() {
+        let ev = Evaluator::new(MockResolver::new());
+        // sanity: parser parse_in_braces works on simple input
+        assert!(crate::parser::parse_in_braces("1 + 2}").is_ok());
+        // simple literal with expression
+        let src = "Hello ${1 + 2}";
+        let idx = src.find("${").unwrap();
+        let after = &src[idx + 2..];
+        assert_eq!(after, "1 + 2}");
+        assert!(crate::parser::parse_in_braces(after).is_ok());
+        let s = ev.evaluate_interpolated(src).unwrap();
+        assert_eq!(s, "Hello 3");
+        // variable path
+        let s2 = ev.evaluate_interpolated("x is ${x}").unwrap();
+        assert_eq!(s2, "x is 10");
+        // multiple interpolations
+        let s3 = ev.evaluate_interpolated("${'A'}-${math.add(2,3)}-${truth}").unwrap();
+        assert_eq!(s3, "A-5-true");
+        // ensure braces inside strings are handled
+        let s4 = ev.evaluate_interpolated("${'curly } brace'} done").unwrap();
+        assert_eq!(s4, "curly } brace done");
+        // missing closing brace should error
+        match ev.evaluate_interpolated("bad ${1+2") {
+            Err(EvalError::FunctionError(_)) => (),
+            other => panic!("expected parse error, got {:?}", other),
         }
     }
 }
