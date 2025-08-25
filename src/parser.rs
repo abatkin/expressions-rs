@@ -15,14 +15,20 @@ impl Atom {
             Atom::Float(f) => Some(*f != 0.0),
             Atom::Str(s) if s == "true" || s == "false" => Some(s == "true"),
             Atom::Bool(b) => Some(*b),
-            _ => None
+            _ => None,
         }
     }
     pub fn as_int(&self) -> Option<i64> {
-        match self { Atom::Int(i) => Some(*i), _ => None }
+        match self {
+            Atom::Int(i) => Some(*i),
+            _ => None,
+        }
     }
     pub fn as_float(&self) -> Option<f64> {
-        match self { Atom::Float(f) => Some(*f), _ => None }
+        match self {
+            Atom::Float(f) => Some(*f),
+            _ => None,
+        }
     }
     pub fn as_str(&self) -> String {
         match self {
@@ -33,7 +39,11 @@ impl Atom {
         }
     }
     pub fn to_float_lossy(&self) -> Option<f64> {
-        match self { Atom::Float(f) => Some(*f), Atom::Int(i) => Some(*i as f64), _ => None }
+        match self {
+            Atom::Float(f) => Some(*f),
+            Atom::Int(i) => Some(*i as f64),
+            _ => None,
+        }
     }
 }
 
@@ -70,65 +80,36 @@ pub enum BinaryOp {
     Pow,
 }
 
-fn expr_and_spacer<'src>() -> (
-    impl Parser<'src, &'src str, ()> + Clone,
-    impl Parser<'src, &'src str, Expr> + Clone,
-) {
+fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Parser<'src, &'src str, Expr> + Clone) {
     // Whitespace and comments
-    let line_comment = just("//")
-        .ignore_then(any().filter(|c: &char| *c != '\n').repeated())
-        .ignored();
+    let line_comment = just("//").ignore_then(any().filter(|c: &char| *c != '\n').repeated()).ignored();
     let ws = one_of(" \t\r\n").repeated().at_least(1).ignored();
-    let spacer = choice((
-        ws,
-        line_comment,
-    ))
-        .repeated()
-        .ignored();
+    let spacer = choice((ws, line_comment)).repeated().ignored();
 
     // Identifiers
     let ident = text::ident().map(|s: &str| s.to_string());
 
-    let path = ident
-        .separated_by(just('.'))
-        .at_least(1)
-        .collect::<Vec<_>>();
+    let path = ident.separated_by(just('.')).at_least(1).collect::<Vec<_>>();
 
     // Strings: support single or double quotes with escapes \n, \\, \", \'
-    let escape = just('\\').ignore_then(
-        choice((
-            just('n').to('\n'),
-            just('r').to('\r'),
-            just('t').to('\t'),
-            just('\\').to('\\'),
-            just('"').to('"'),
-            just('\'').to('\''),
-            // Allow escaping newline directly
-            just('\n').to('\n'),
-        )),
-    );
+    let escape = just('\\').ignore_then(choice((
+        just('n').to('\n'),
+        just('r').to('\r'),
+        just('t').to('\t'),
+        just('\\').to('\\'),
+        just('"').to('"'),
+        just('\'').to('\''),
+        // Allow escaping newline directly
+        just('\n').to('\n'),
+    )));
 
     let string_sq = just('\'')
-        .ignore_then(
-            choice((
-                escape.clone(),
-                any().filter(|c: &char| *c != '\\' && *c != '\'' && *c != '\n'),
-            ))
-                .repeated()
-                .collect::<String>(),
-        )
+        .ignore_then(choice((escape.clone(), any().filter(|c: &char| *c != '\\' && *c != '\'' && *c != '\n'))).repeated().collect::<String>())
         .then_ignore(just('\''))
         .map(Atom::Str);
 
     let string_dq = just('"')
-        .ignore_then(
-            choice((
-                escape.clone(),
-                any().filter(|c: &char| *c != '\\' && *c != '"' && *c != '\n'),
-            ))
-                .repeated()
-                .collect::<String>(),
-        )
+        .ignore_then(choice((escape.clone(), any().filter(|c: &char| *c != '\\' && *c != '"' && *c != '\n'))).repeated().collect::<String>())
         .then_ignore(just('"'))
         .map(Atom::Str);
 
@@ -137,128 +118,111 @@ fn expr_and_spacer<'src>() -> (
     let number = just('-')
         .or_not()
         .then(digits)
-        .then(just('.')
-            .then(digits)
-            .or_not())
+        .then(just('.').then(digits).or_not())
         .to_slice()
-        .map(|s: &str| {
-            if s.contains('.') {
-                Atom::Float(s.parse::<f64>().unwrap())
-            } else {
-                Atom::Int(s.parse::<i64>().unwrap())
-            }
-        });
+        .map(|s: &str| if s.contains('.') { Atom::Float(s.parse::<f64>().unwrap()) } else { Atom::Int(s.parse::<i64>().unwrap()) });
 
-    let boolean = choice((
-        text::keyword("true").to(Atom::Bool(true)),
-        text::keyword("false").to(Atom::Bool(false)),
-    ));
+    let boolean = choice((text::keyword("true").to(Atom::Bool(true)), text::keyword("false").to(Atom::Bool(false))));
 
     // Parentheses grouping will be handled via recursive expression parser
     let expr = recursive(|expr| {
         // Postfix: function call (single) after a dotted path
-        let args = expr.clone()
+        let args = expr
+            .clone()
             .separated_by(just(',').padded_by(spacer.clone()))
             .allow_trailing()
             .collect::<Vec<_>>()
             .delimited_by(just('(').padded_by(spacer.clone()), just(')').padded_by(spacer.clone()));
 
-        let path_or_call = path.clone().then(args.or_not()).map(|(p, maybe_args)| {
-            match maybe_args {
-                Some(a) => Expr::Call { callee: Box::new(Expr::Path(p)), args: a },
-                None => Expr::Path(p),
-            }
+        let path_or_call = path.clone().then(args.or_not()).map(|(p, maybe_args)| match maybe_args {
+            Some(a) => Expr::Call { callee: Box::new(Expr::Path(p)), args: a },
+            None => Expr::Path(p),
         });
 
-        let member_chain = just('.')
-            .ignore_then(text::ident().map(|s: &str| s.to_string()))
-            .repeated()
-            .collect::<Vec<_>>();
+        let member_chain = just('.').ignore_then(text::ident().map(|s: &str| s.to_string())).repeated().collect::<Vec<_>>();
 
-        let path_call_and_members = path_or_call
-            .then(member_chain)
-            .map(|(mut base, tail)| {
-                let mut acc = base;
-                for name in tail {
-                    acc = Expr::Member { object: Box::new(acc), field: name };
-                }
-                acc
-            });
+        let path_call_and_members = path_or_call.then(member_chain).map(|(mut base, tail)| {
+            let mut acc = base;
+            for name in tail {
+                acc = Expr::Member { object: Box::new(acc), field: name };
+            }
+            acc
+        });
 
         let primary = choice((
             choice((string_sq.clone(), string_dq.clone(), number.clone(), boolean.clone())).map(Expr::Basic),
             path_call_and_members,
             expr.delimited_by(just('(').padded_by(spacer.clone()), just(')').padded_by(spacer.clone())),
         ))
-            .padded_by(spacer.clone());
+        .padded_by(spacer.clone());
 
         // Unary '!'
-        let unary = just('!')
-            .repeated()
-            .foldr(primary, |_bang, rhs| Expr::Unary { op: UnaryOp::Not, expr: Box::new(rhs) });
+        let unary = just('!').repeated().foldr(primary, |_bang, rhs| Expr::Unary { op: UnaryOp::Not, expr: Box::new(rhs) });
 
         // Exponentiation '^' (right-assoc) using recursion
         let pow = recursive(|pow| {
-            unary.clone()
-                .then(just('^').padded_by(spacer.clone()).ignore_then(pow).or_not())
-                .map(|(lhs, rhs)| match rhs {
-                    Some(r) => Expr::Binary { op: BinaryOp::Pow, left: Box::new(lhs), right: Box::new(r) },
-                    None => lhs,
-                })
+            unary.clone().then(just('^').padded_by(spacer.clone()).ignore_then(pow).or_not()).map(|(lhs, rhs)| match rhs {
+                Some(r) => Expr::Binary {
+                    op: BinaryOp::Pow,
+                    left: Box::new(lhs),
+                    right: Box::new(r),
+                },
+                None => lhs,
+            })
         });
 
         let mul_div_mod = pow.clone().foldl(
-            choice((just('*').to(BinaryOp::Mul), just('/').to(BinaryOp::Div), just('%').to(BinaryOp::Mod)))
-                .padded_by(spacer.clone())
-                .then(pow)
-                .repeated(),
-            |lhs, (op, rhs)| Expr::Binary { op, left: Box::new(lhs), right: Box::new(rhs) },
+            choice((just('*').to(BinaryOp::Mul), just('/').to(BinaryOp::Div), just('%').to(BinaryOp::Mod))).padded_by(spacer.clone()).then(pow).repeated(),
+            |lhs, (op, rhs)| Expr::Binary {
+                op,
+                left: Box::new(lhs),
+                right: Box::new(rhs),
+            },
         );
 
-        let add_sub = mul_div_mod.clone().foldl(
-            choice((just('+').to(BinaryOp::Add), just('-').to(BinaryOp::Sub)))
-                .padded_by(spacer.clone())
-                .then(mul_div_mod)
-                .repeated(),
-            |lhs, (op, rhs)| Expr::Binary { op, left: Box::new(lhs), right: Box::new(rhs) },
-        );
+        let add_sub = mul_div_mod
+            .clone()
+            .foldl(choice((just('+').to(BinaryOp::Add), just('-').to(BinaryOp::Sub))).padded_by(spacer.clone()).then(mul_div_mod).repeated(), |lhs, (op, rhs)| {
+                Expr::Binary {
+                    op,
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                }
+            });
 
         let cmp = add_sub.clone().foldl(
-            choice((
-                just("<=").to(BinaryOp::Le),
-                just(">=").to(BinaryOp::Ge),
-                just('<').to(BinaryOp::Lt),
-                just('>').to(BinaryOp::Gt),
-            ))
+            choice((just("<=").to(BinaryOp::Le), just(">=").to(BinaryOp::Ge), just('<').to(BinaryOp::Lt), just('>').to(BinaryOp::Gt)))
                 .padded_by(spacer.clone())
                 .then(add_sub)
                 .repeated(),
-            |lhs, (op, rhs)| Expr::Binary { op, left: Box::new(lhs), right: Box::new(rhs) },
+            |lhs, (op, rhs)| Expr::Binary {
+                op,
+                left: Box::new(lhs),
+                right: Box::new(rhs),
+            },
         );
 
-        let eq = cmp.clone().foldl(
-            choice((just("==").to(BinaryOp::Eq), just("!=").to(BinaryOp::Ne)))
-                .padded_by(spacer.clone())
-                .then(cmp)
-                .repeated(),
-            |lhs, (op, rhs)| Expr::Binary { op, left: Box::new(lhs), right: Box::new(rhs) },
-        );
+        let eq = cmp
+            .clone()
+            .foldl(choice((just("==").to(BinaryOp::Eq), just("!=").to(BinaryOp::Ne))).padded_by(spacer.clone()).then(cmp).repeated(), |lhs, (op, rhs)| {
+                Expr::Binary {
+                    op,
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                }
+            });
 
-        let and = eq.clone().foldl(
-            just("&&").to(BinaryOp::And)
-                .padded_by(spacer.clone())
-                .then(eq)
-                .repeated(),
-            |lhs, (op, rhs)| Expr::Binary { op, left: Box::new(lhs), right: Box::new(rhs) },
-        );
+        let and = eq.clone().foldl(just("&&").to(BinaryOp::And).padded_by(spacer.clone()).then(eq).repeated(), |lhs, (op, rhs)| Expr::Binary {
+            op,
+            left: Box::new(lhs),
+            right: Box::new(rhs),
+        });
 
-        let or = and.clone().foldl(
-            just("||").to(BinaryOp::Or)
-                .padded_by(spacer.clone())
-                .then(and)
-                .repeated(),
-            |lhs, (op, rhs)| Expr::Binary { op, left: Box::new(lhs), right: Box::new(rhs) },
-        );
+        let or = and.clone().foldl(just("||").to(BinaryOp::Or).padded_by(spacer.clone()).then(and).repeated(), |lhs, (op, rhs)| Expr::Binary {
+            op,
+            left: Box::new(lhs),
+            right: Box::new(rhs),
+        });
 
         or.padded_by(spacer.clone())
     });
@@ -270,7 +234,8 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
     let (spacer, expr) = expr_and_spacer();
 
     // Allow multiple expressions separated by whitespace/comments and take the last one
-    let program = spacer.clone()
+    let program = spacer
+        .clone()
         .ignore_then(expr.clone())
         .then_ignore(spacer.clone())
         .repeated()
@@ -296,22 +261,15 @@ pub fn parse(input: &str) -> Result<Expr, String> {
 pub fn parse_in_braces(input: &str) -> Result<(Expr, usize), String> {
     let (spacer, expr) = expr_and_spacer();
     // Parse: expr '}' and return (expr, bytes_consumed_including_rcurly)
-    let parser = expr
-        .clone()
-        .then(just('}'))
-        .map_with(|(e, _rc), extra| {
-            let sp = extra.span();
-            (e, sp.end)
-        });
+    let parser = expr.clone().then(just('}')).map_with(|(e, _rc), extra| {
+        let sp = extra.span();
+        (e, sp.end)
+    });
 
     match parser.parse(input).into_result() {
         Ok(res) => Ok(res),
         Err(errs) => {
-            let msg = errs
-                .into_iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
+            let msg = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
             Err(msg)
         }
     }
@@ -336,14 +294,20 @@ mod tests {
     fn parse_binary() {
         let ast = parse("1 + 2 * 3").unwrap();
         // ensure it builds
-        if let Expr::Binary { op: BinaryOp::Add, .. } = ast { } else { panic!("bad ast"); }
+        if let Expr::Binary { op: BinaryOp::Add, .. } = ast {
+        } else {
+            panic!("bad ast");
+        }
     }
 
     #[test]
     fn parse_boolean() {
         let ast = parse("1 + 2 * 3").unwrap();
         // ensure it builds
-        if let Expr::Binary { op: BinaryOp::Add, .. } = ast { } else { panic!("bad ast"); }
+        if let Expr::Binary { op: BinaryOp::Add, .. } = ast {
+        } else {
+            panic!("bad ast");
+        }
     }
     #[test]
     fn parse_calls_and_paths() {
@@ -351,6 +315,4 @@ mod tests {
         // Just check it parses
         let _ = ast;
     }
-
 }
-
