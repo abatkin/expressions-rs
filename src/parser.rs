@@ -259,52 +259,27 @@ pub fn parse(input: &str) -> Result<Expr, String> {
 // Parse an expression that must be terminated by a closing '}' and return
 // the parsed Expr along with the number of bytes consumed (including the '}').
 pub fn parse_in_braces(input: &str) -> Result<(Expr, usize), String> {
-    // Find the first unescaped, non-string '}' so we can support suffix text after it.
-    let mut in_sq = false;
-    let mut in_dq = false;
-    let mut escape = false;
-    for (i, ch) in input.char_indices() {
-        if escape {
-            escape = false;
-            continue;
-        }
-        match ch {
-            '\\' => {
-                if in_sq || in_dq {
-                    escape = true;
-                }
-            }
-            '\'' => {
-                if !in_dq {
-                    in_sq = !in_sq;
-                }
-            }
-            '"' => {
-                if !in_sq {
-                    in_dq = !in_dq;
-                }
-            }
-            '}' => {
-                if !in_sq && !in_dq {
-                    // Parse everything before the closing brace as a full expression
-                    let expr_src = &input[..i];
-                    let (_spacer, expr) = expr_and_spacer();
-                    let p = expr.clone().then_ignore(end());
-                    match p.parse(expr_src).into_result() {
-                        Ok(ast) => return Ok((ast, i + 1)),
-                        Err(errs) => {
-                            let joined = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-                            let snippet: String = expr_src.chars().take(80).collect();
-                            let msg = if joined.trim().is_empty() { "parse error".to_string() } else { joined };
-                            return Err(format!("{} inside interpolation (near: '{}')", msg, snippet));
-                        }
-                    }
-                }
-            }
-            _ => {}
+    // Use the existing expression parser and require a trailing '}' using parser combinators.
+    // This leverages the parser's own handling of strings, escapes, and nesting instead of manual scanning.
+    let (_spacer, expr) = expr_and_spacer();
+    let p = expr
+        .clone()
+        .then_ignore(just('}'))
+        .map_with(|e, extra| {
+            let span = extra.span();
+            (e, span.end)
+        })
+        .then_ignore(any().repeated()); // allow trailing content after '}' so callers can continue scanning
+
+    match p.parse(input).into_result() {
+        Ok((ast, consumed)) => Ok((ast, consumed)),
+        Err(errs) => {
+            let joined = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+            let snippet: String = input.chars().take(80).collect();
+            let msg = if joined.trim().is_empty() { "parse error".to_string() } else { joined };
+            Err(format!("{} inside interpolation (near: '{}')", msg, snippet))
         }
     }
-    Err("missing closing '}' for interpolation".to_string())
 }
 
 #[cfg(test)]

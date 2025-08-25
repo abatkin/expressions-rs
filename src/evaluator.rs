@@ -428,8 +428,6 @@ mod tests {
         assert_eq!(s2, "x is 10");
 
         // multiple interpolations
-        // let s3 = ev.evaluate_interpolated("${'A'}-").unwrap();
-        // assert_eq!(s3, "A-");
         let s3 = ev.evaluate_interpolated("${'A'}-${math.add(2,3)}-${truth}").unwrap();
         assert_eq!(s3, "A-5-true");
 
