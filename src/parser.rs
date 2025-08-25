@@ -228,7 +228,7 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
     (spacer, expr)
 }
 
-pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
+fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
     let (spacer, expr) = expr_and_spacer();
 
     // Allow multiple expressions separated by whitespace/comments and take the last one
@@ -244,6 +244,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
     program.then_ignore(end())
 }
 
+// Main entry point for parsing an expression, returns the AST (Expr) or error string
 pub fn parse(input: &str) -> Result<Expr, String> {
     match parser().parse(input).into_result() {
         Ok(ast) => Ok(ast),
@@ -258,7 +259,7 @@ pub fn parse(input: &str) -> Result<Expr, String> {
 
 // Parse an expression that must be terminated by a closing '}' and return
 // the parsed Expr along with the number of bytes consumed (including the '}').
-pub fn parse_in_braces(input: &str) -> Result<(Expr, usize), String> {
+pub(crate) fn parse_in_braces(input: &str) -> Result<(Expr, usize), String> {
     // Use the existing expression parser and require a trailing '}' using parser combinators.
     // This leverages the parser's own handling of strings, escapes, and nesting instead of manual scanning.
     let (_spacer, expr) = expr_and_spacer();

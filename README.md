@@ -1,4 +1,4 @@
-# Expressions
+# Simple Expressions
 
 A small expression language with variables, function calls, simple types and common operators
 
