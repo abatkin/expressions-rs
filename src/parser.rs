@@ -141,7 +141,7 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
 
         let member_chain = just('.').ignore_then(text::ident().map(|s: &str| s.to_string())).repeated().collect::<Vec<_>>();
 
-        let path_call_and_members = path_or_call.then(member_chain).map(|(mut base, tail)| {
+        let path_call_and_members = path_or_call.then(member_chain).map(|(base, tail)| {
             let mut acc = base;
             for name in tail {
                 acc = Expr::Member { object: Box::new(acc), field: name };
@@ -259,7 +259,7 @@ pub fn parse(input: &str) -> Result<Expr, String> {
 // Parse an expression that must be terminated by a closing '}' and return
 // the parsed Expr along with the number of bytes consumed (including the '}').
 pub fn parse_in_braces(input: &str) -> Result<(Expr, usize), String> {
-    let (spacer, expr) = expr_and_spacer();
+    let (_spacer, expr) = expr_and_spacer();
     // Parse: expr '}' and return (expr, bytes_consumed_including_rcurly)
     let parser = expr.clone().then(just('}')).map_with(|(e, _rc), extra| {
         let sp = extra.span();

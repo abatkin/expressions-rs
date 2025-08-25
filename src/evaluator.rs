@@ -1,4 +1,5 @@
-use crate::parser::{Atom, BinaryOp, Expr, UnaryOp};
+use std::fmt::{Display, Formatter};
+use crate::parser::{parse, Atom, BinaryOp, Expr, UnaryOp};
 
 #[derive(Debug)]
 pub enum EvalError {
@@ -8,13 +9,48 @@ pub enum EvalError {
     TypeError(&'static str),
     DivideByZero,
     FunctionError(String),
+    InterpolationError(String),
+    EvaluationFailed(String),
     Unsupported(&'static str),
+}
+
+impl Display for EvalError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvalError::ResolveFailed(path) => write!(f, "resolve failed: {}", path.join(".")),
+            EvalError::NotCallable(path) => write!(f, "not callable: {}", path.join(".")),
+            EvalError::NotAValue(path) => write!(f, "not a value: {}", path.join(".")),
+            EvalError::TypeError(msg) => write!(f, "type error: {}", msg),
+            EvalError::DivideByZero => write!(f, "divide by zero"),
+            EvalError::FunctionError(msg) => write!(f, "function error: {}", msg),
+            EvalError::InterpolationError(msg) => write!(f, "interpolation error: {}", msg),
+            EvalError::EvaluationFailed(msg) => write!(f, "evaluation failed: {}", msg),
+            EvalError::Unsupported(msg) => write!(f, "unsupported: {}", msg),
+        }
+    }
 }
 
 pub trait Variable {
     fn as_atom(&self) -> Result<Atom, EvalError>;
     fn call(&self, _args: Vec<Atom>) -> Result<Atom, EvalError> {
         Err(EvalError::NotCallable(Vec::new()))
+    }
+}
+
+pub struct SimpleConstVar(pub Atom);
+impl Variable for SimpleConstVar {
+    fn as_atom(&self) -> Result<Atom, EvalError> {
+        Ok(self.0.clone())
+    }
+}
+
+pub struct SimpleFuncVar(fn(Vec<Atom>) -> Result<Atom, EvalError>);
+impl Variable for SimpleFuncVar {
+    fn as_atom(&self) -> Result<Atom, EvalError> {
+        Err(EvalError::NotAValue(vec![]))
+    }
+    fn call(&self, args: Vec<Atom>) -> Result<Atom, EvalError> {
+        (self.0)(args)
     }
 }
 
@@ -47,7 +83,7 @@ impl<R: VariableResolver> Evaluator<R> {
                     rest = &after[consumed..];
                 }
                 Err(e) => {
-                    return Err(EvalError::FunctionError(format!("interpolation parse error: {}", e)));
+                    return Err(EvalError::InterpolationError(format!("interpolation parse error: {}", e)));
                 }
             }
         }
@@ -56,7 +92,13 @@ impl<R: VariableResolver> Evaluator<R> {
         Ok(out)
     }
 
-    pub fn evaluate(&self, expr: &Expr) -> Result<Atom, EvalError> {
+    pub fn evaluate_string(&self, input: &str) -> Result<Atom, EvalError> {
+        let expr = parse(input).map_err(|e| EvalError::EvaluationFailed(format!("parse error: {}", e)))?;
+        let result = self.evaluate(&expr).map_err(|e| EvalError::EvaluationFailed(format!("evaluation error: {}", e)))?;
+        return Ok(result);
+    }
+
+    fn evaluate(&self, expr: &Expr) -> Result<Atom, EvalError> {
         match expr {
             Expr::Basic(a) => match a {
                 Atom::Int(i) => Ok(Atom::Int(*i)),
@@ -262,23 +304,6 @@ impl<R: VariableResolver> Evaluator<R> {
 mod tests {
     use super::*;
 
-    struct ConstVar(Atom);
-    impl Variable for ConstVar {
-        fn as_atom(&self) -> Result<Atom, EvalError> {
-            Ok(self.0.clone())
-        }
-    }
-
-    struct FuncVar(fn(Vec<Atom>) -> Result<Atom, EvalError>);
-    impl Variable for FuncVar {
-        fn as_atom(&self) -> Result<Atom, EvalError> {
-            Err(EvalError::NotAValue(vec![]))
-        }
-        fn call(&self, args: Vec<Atom>) -> Result<Atom, EvalError> {
-            (self.0)(args)
-        }
-    }
-
     use crate::parser::parse;
     use std::collections::HashMap;
 
@@ -300,13 +325,13 @@ mod tests {
             let key = path.join(".");
             // For tests, return some built-ins regardless of map contents
             if key == "x" {
-                return Some(Box::new(ConstVar(Atom::Int(10))) as Box<dyn Variable>);
+                return Some(Box::new(SimpleConstVar(Atom::Int(10))) as Box<dyn Variable>);
             }
             if key == "truth" {
-                return Some(Box::new(ConstVar(Atom::Bool(true))) as Box<dyn Variable>);
+                return Some(Box::new(SimpleConstVar(Atom::Bool(true))) as Box<dyn Variable>);
             }
             if key == "math.add" {
-                return Some(Box::new(FuncVar(|args| {
+                return Some(Box::new(SimpleFuncVar(|args| {
                     if args.len() != 2 {
                         return Err(EvalError::FunctionError("need 2 args".into()));
                     }
@@ -317,7 +342,7 @@ mod tests {
             }
             // Fall back to any explicitly provided mapping (value semantics aren't preserved across calls; used rarely here)
             if self.map.contains_key(&key) {
-                return Some(Box::new(ConstVar(Atom::Int(0))) as Box<dyn Variable>);
+                return Some(Box::new(SimpleConstVar(Atom::Int(0))) as Box<dyn Variable>);
             }
             None
         }

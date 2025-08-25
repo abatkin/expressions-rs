@@ -1,2 +1,2 @@
-mod evaluator;
-mod parser;
+pub mod evaluator;
+pub mod parser;
