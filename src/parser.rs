@@ -204,12 +204,10 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
 
         let eq = cmp
             .clone()
-            .foldl(choice((just("==").to(BinaryOp::Eq), just("!=").to(BinaryOp::Ne))).padded_by(spacer).then(cmp).repeated(), |lhs, (op, rhs)| {
-                Expr::Binary {
-                    op,
-                    left: Box::new(lhs),
-                    right: Box::new(rhs),
-                }
+            .foldl(choice((just("==").to(BinaryOp::Eq), just("!=").to(BinaryOp::Ne))).padded_by(spacer).then(cmp).repeated(), |lhs, (op, rhs)| Expr::Binary {
+                op,
+                left: Box::new(lhs),
+                right: Box::new(rhs),
             });
 
         let and = eq.clone().foldl(just("&&").to(BinaryOp::And).padded_by(spacer).then(eq).repeated(), |lhs, (op, rhs)| Expr::Binary {

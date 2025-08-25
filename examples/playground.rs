@@ -8,9 +8,7 @@ struct MapVariableResolver {
 
 impl MapVariableResolver {
     fn new() -> Self {
-        Self {
-            variables: HashMap::new(),
-        }
+        Self { variables: HashMap::new() }
     }
 
     fn set(&mut self, key: String, value: String) {

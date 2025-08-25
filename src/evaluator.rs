@@ -1,5 +1,5 @@
+use crate::parser::{Atom, BinaryOp, Expr, UnaryOp, parse};
 use std::fmt::{Display, Formatter};
-use crate::parser::{parse, Atom, BinaryOp, Expr, UnaryOp};
 
 #[derive(Debug)]
 pub enum EvalError {
@@ -122,10 +122,10 @@ impl<R: VariableResolver> Evaluator<R> {
         }
     }
 
-    fn eval_path(&self, p: &Vec<String>) -> Result<Atom, EvalError> {
+    fn eval_path(&self, p: &[String]) -> Result<Atom, EvalError> {
         match self.resolver.resolve(p) {
             Some(v) => v.as_atom(),
-            None => Err(EvalError::ResolveFailed(p.clone())),
+            None => Err(EvalError::ResolveFailed(p.to_owned())),
         }
     }
 
@@ -166,6 +166,7 @@ impl<R: VariableResolver> Evaluator<R> {
         Err(EvalError::Unsupported("member access on non-path is unsupported"))
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn flatten_member_path(&self, expr: &Expr) -> Option<Vec<String>> {
         match expr {
             Expr::Path(p) => Some(p.clone()),
