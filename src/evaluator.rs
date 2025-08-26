@@ -400,7 +400,7 @@ mod tests {
 
         // missing closing brace should error
         match ev.evaluate_interpolated("bad ${1+2") {
-            Err(Error::ParseFailed(_)) => (),
+            Err(Error::ParseFailed(_,_)) => (),
             other => panic!("expected parse error, got {:?}", other),
         }
     }
