@@ -1,5 +1,5 @@
-use expressions::evaluator::{Evaluator, SimpleConstVar, Variable, VariableResolver};
-use expressions::parser::Atom;
+use simple_expressions::evaluator::{Evaluator, SimpleConstVar, Variable, VariableResolver};
+use simple_expressions::parser::Atom;
 use std::collections::HashMap;
 
 struct MapVariableResolver {

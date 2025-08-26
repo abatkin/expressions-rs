@@ -1,57 +1,26 @@
-use crate::parser::{Atom, BinaryOp, Expr, UnaryOp, parse};
-use std::fmt::{Display, Formatter};
-
-#[derive(Debug)]
-pub enum EvalError {
-    ResolveFailed(Vec<String>),
-    NotCallable(Vec<String>),
-    NotAValue(Vec<String>),
-    TypeError(&'static str),
-    DivideByZero,
-    FunctionError(String),
-    InterpolationError(String),
-    EvaluationFailed(String),
-    ParseFailed(String),
-    Unsupported(&'static str),
-}
-
-impl Display for EvalError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EvalError::ResolveFailed(path) => write!(f, "resolve failed: {}", path.join(".")),
-            EvalError::NotCallable(path) => write!(f, "not callable: {}", path.join(".")),
-            EvalError::NotAValue(path) => write!(f, "not a value: {}", path.join(".")),
-            EvalError::TypeError(msg) => write!(f, "type error: {}", msg),
-            EvalError::DivideByZero => write!(f, "divide by zero"),
-            EvalError::FunctionError(msg) => write!(f, "function error: {}", msg),
-            EvalError::InterpolationError(msg) => write!(f, "interpolation error: {}", msg),
-            EvalError::EvaluationFailed(msg) => write!(f, "evaluation failed: {}", msg),
-            EvalError::ParseFailed(msg) => write!(f, "parse failed: {}", msg),
-            EvalError::Unsupported(msg) => write!(f, "unsupported: {}", msg),
-        }
-    }
-}
+use crate::parser::parse;
+use crate::types::{Atom, BinaryOp, Error, Expr, Result, UnaryOp};
 
 pub trait Variable {
-    fn as_atom(&self) -> Result<Atom, EvalError>;
-    fn call(&self, _args: Vec<Atom>) -> Result<Atom, EvalError> {
-        Err(EvalError::NotCallable(Vec::new()))
+    fn as_atom(&self) -> Result<Atom>;
+    fn call(&self, _args: Vec<Atom>) -> Result<Atom> {
+        Err(Error::NotCallable)
     }
 }
 
 pub struct SimpleConstVar(pub Atom);
 impl Variable for SimpleConstVar {
-    fn as_atom(&self) -> Result<Atom, EvalError> {
+    fn as_atom(&self) -> Result<Atom> {
         Ok(self.0.clone())
     }
 }
 
-pub struct SimpleFuncVar(fn(Vec<Atom>) -> Result<Atom, EvalError>);
+pub struct SimpleFuncVar(fn(Vec<Atom>) -> Result<Atom>);
 impl Variable for SimpleFuncVar {
-    fn as_atom(&self) -> Result<Atom, EvalError> {
-        Err(EvalError::NotAValue(vec![]))
+    fn as_atom(&self) -> Result<Atom> {
+        Err(Error::EvaluationFailed("function variable is not callable".into()))
     }
-    fn call(&self, args: Vec<Atom>) -> Result<Atom, EvalError> {
+    fn call(&self, args: Vec<Atom>) -> Result<Atom> {
         (self.0)(args)
     }
 }
@@ -69,38 +38,31 @@ impl<R: VariableResolver> Evaluator<R> {
         Self { resolver }
     }
 
-    // Evaluate a string with ${...} interpolations. Each ${...} is parsed with the
-    // chumsky parser that expects a closing '}', so no manual brace tracking is needed.
-    pub fn evaluate_interpolated(&self, input: &str) -> Result<String, EvalError> {
+    // Evaluate a string with ${...} interpolations
+    pub fn evaluate_interpolated(&self, input: &str) -> Result<String> {
         let mut out = String::new();
         let mut rest = input;
         while let Some(idx) = rest.find("${") {
             // copy literal part before the interpolation
             out.push_str(&rest[..idx]);
             let after = &rest[idx + 2..];
-            match crate::parser::parse_in_braces(after) {
-                Ok((expr, consumed)) => {
-                    let val = self.evaluate(&expr)?;
-                    out.push_str(&val.as_str());
-                    rest = &after[consumed..];
-                }
-                Err(e) => {
-                    return Err(EvalError::ParseFailed(e));
-                }
-            }
+            let (expr, consumed) = crate::parser::parse_in_braces(after)?;
+            let val = self.evaluate(&expr)?;
+            out.push_str(&val.as_str());
+            rest = &after[consumed..];
         }
         // copy the remainder
         out.push_str(rest);
         Ok(out)
     }
 
-    pub fn evaluate_string(&self, input: &str) -> Result<Atom, EvalError> {
-        let expr = parse(input).map_err(EvalError::ParseFailed)?;
-        let result = self.evaluate(&expr).map_err(|e| EvalError::EvaluationFailed(format!("evaluation error: {}", e)))?;
+    pub fn evaluate_string(&self, input: &str) -> Result<Atom> {
+        let expr = parse(input)?;
+        let result = self.evaluate(&expr).map_err(|e| Error::EvaluationFailed(format!("evaluation error: {}", e)))?;
         Ok(result)
     }
 
-    fn evaluate(&self, expr: &Expr) -> Result<Atom, EvalError> {
+    fn evaluate(&self, expr: &Expr) -> Result<Atom> {
         match expr {
             Expr::Basic(a) => match a {
                 Atom::Int(i) => Ok(Atom::Int(*i)),
@@ -115,7 +77,7 @@ impl<R: VariableResolver> Evaluator<R> {
                 let v = self.evaluate(expr)?;
                 match op {
                     UnaryOp::Not => {
-                        let b = v.as_bool().ok_or(EvalError::TypeError("'!' expects bool"))?;
+                        let b = v.as_bool().ok_or(Error::TypeMismatch("'!' expects bool".into()))?;
                         Ok(Atom::Bool(!b))
                     }
                 }
@@ -124,14 +86,14 @@ impl<R: VariableResolver> Evaluator<R> {
         }
     }
 
-    fn eval_path(&self, p: &[String]) -> Result<Atom, EvalError> {
+    fn eval_path(&self, p: &[String]) -> Result<Atom> {
         match self.resolver.resolve(p) {
             Some(v) => v.as_atom(),
-            None => Err(EvalError::ResolveFailed(p.to_owned())),
+            None => Err(Error::ResolveFailed(p.to_owned())),
         }
     }
 
-    fn eval_call(&self, callee: &Expr, args: &Vec<Expr>) -> Result<Atom, EvalError> {
+    fn eval_call(&self, callee: &Expr, args: &Vec<Expr>) -> Result<Atom> {
         // Only support calling a Path directly for now
         let path = match callee {
             Expr::Path(p) => p.clone(),
@@ -141,10 +103,10 @@ impl<R: VariableResolver> Evaluator<R> {
                     base.push(field.clone());
                     base
                 } else {
-                    return Err(EvalError::Unsupported("calling non-path/member callee"));
+                    return Err(Error::Unsupported("calling non-path/member callee".into()));
                 }
             }
-            _ => return Err(EvalError::Unsupported("calling non-path callee")),
+            _ => return Err(Error::Unsupported("calling non-path callee".into())),
         };
         let mut vals = Vec::with_capacity(args.len());
         for a in args {
@@ -152,11 +114,11 @@ impl<R: VariableResolver> Evaluator<R> {
         }
         match self.resolver.resolve(&path) {
             Some(v) => v.call(vals),
-            None => Err(EvalError::ResolveFailed(path)),
+            None => Err(Error::ResolveFailed(path)),
         }
     }
 
-    fn eval_member(&self, object: &Expr, field: &str) -> Result<Atom, EvalError> {
+    fn eval_member(&self, object: &Expr, field: &str) -> Result<Atom> {
         // If the object is a path (or member chain), flatten and resolve as a longer path
         if let Some(mut base) = self.flatten_member_path(object) {
             let mut p = Vec::new();
@@ -165,7 +127,7 @@ impl<R: VariableResolver> Evaluator<R> {
             return self.eval_path(&p);
         }
         // Otherwise, member access on non-path result is unsupported in this minimal evaluator
-        Err(EvalError::Unsupported("member access on non-path is unsupported"))
+        Err(Error::Unsupported("member access on non-path is unsupported".into()))
     }
 
     #[allow(clippy::only_used_in_recursion)]
@@ -181,25 +143,25 @@ impl<R: VariableResolver> Evaluator<R> {
         }
     }
 
-    fn eval_binary(&self, op: BinaryOp, left: &Expr, right: &Expr) -> Result<Atom, EvalError> {
+    fn eval_binary(&self, op: BinaryOp, left: &Expr, right: &Expr) -> Result<Atom> {
         use BinaryOp::*;
         match op {
             Or => {
                 let l = self.evaluate(left)?;
-                let lb = l.as_bool().ok_or(EvalError::TypeError("'||' expects bools"))?;
+                let lb = l.as_bool().ok_or(Error::TypeMismatch("'||' expects bools".into()))?;
                 if lb {
                     return Ok(Atom::Bool(true));
                 }
-                let rb = self.evaluate(right)?.as_bool().ok_or(EvalError::TypeError("'||' expects bools"))?;
+                let rb = self.evaluate(right)?.as_bool().ok_or(Error::TypeMismatch("'||' expects bools".into()))?;
                 Ok(Atom::Bool(lb || rb))
             }
             And => {
                 let l = self.evaluate(left)?;
-                let lb = l.as_bool().ok_or(EvalError::TypeError("'&&' expects bools"))?;
+                let lb = l.as_bool().ok_or(Error::TypeMismatch("'&&' expects bools".into()))?;
                 if !lb {
                     return Ok(Atom::Bool(false));
                 }
-                let rb = self.evaluate(right)?.as_bool().ok_or(EvalError::TypeError("'&&' expects bools"))?;
+                let rb = self.evaluate(right)?.as_bool().ok_or(Error::TypeMismatch("'&&' expects bools".into()))?;
                 Ok(Atom::Bool(lb && rb))
             }
             Eq | Ne => {
@@ -232,7 +194,7 @@ impl<R: VariableResolver> Evaluator<R> {
                     };
                     return Ok(Atom::Bool(res));
                 }
-                Err(EvalError::TypeError("comparison requires two numbers or two strings"))
+                Err(Error::TypeMismatch("comparison requires two numbers or two strings".into()))
             }
             Add => {
                 let l = self.evaluate(left)?;
@@ -246,7 +208,7 @@ impl<R: VariableResolver> Evaluator<R> {
                         } else if let (Atom::Str(as_), Atom::Str(bs_)) = (a, b) {
                             Ok(Atom::Str(as_ + &bs_))
                         } else {
-                            Err(EvalError::TypeError("'+' expects numbers or strings"))
+                            Err(Error::TypeMismatch("'+' expects numbers or strings".into()))
                         }
                     }
                 }
@@ -258,7 +220,7 @@ impl<R: VariableResolver> Evaluator<R> {
                 match (op, &l, &r) {
                     (BinaryOp::Sub, Atom::Int(a), Atom::Int(b)) => return Ok(Atom::Int(a - b)),
                     (BinaryOp::Mul, Atom::Int(a), Atom::Int(b)) => return Ok(Atom::Int(a * b)),
-                    (BinaryOp::Mod, Atom::Int(_), Atom::Int(b)) if *b == 0 => return Err(EvalError::DivideByZero),
+                    (BinaryOp::Mod, Atom::Int(_), Atom::Int(b)) if *b == 0 => return Err(Error::DivideByZero),
                     (BinaryOp::Mod, Atom::Int(a), Atom::Int(b)) => return Ok(Atom::Int(a % b)),
                     _ => {}
                 }
@@ -269,13 +231,13 @@ impl<R: VariableResolver> Evaluator<R> {
                         Mul => a * b,
                         Div => {
                             if b == 0.0 {
-                                return Err(EvalError::DivideByZero);
+                                return Err(Error::DivideByZero);
                             }
                             a / b
                         }
                         Mod => {
                             if b == 0.0 {
-                                return Err(EvalError::DivideByZero);
+                                return Err(Error::DivideByZero);
                             }
                             a % b
                         }
@@ -284,13 +246,13 @@ impl<R: VariableResolver> Evaluator<R> {
                     };
                     Ok(Atom::Float(res))
                 } else {
-                    Err(EvalError::TypeError("arithmetic expects numbers"))
+                    Err(Error::TypeMismatch("arithmetic expects numbers".into()))
                 }
             }
         }
     }
 
-    fn atom_eq(&self, a: &Atom, b: &Atom) -> Result<bool, EvalError> {
+    fn atom_eq(&self, a: &Atom, b: &Atom) -> Result<bool> {
         Ok(match (a, b) {
             (Atom::Int(x), Atom::Int(y)) => x == y,
             (Atom::Float(x), Atom::Float(y)) => x == y,
@@ -298,7 +260,7 @@ impl<R: VariableResolver> Evaluator<R> {
             (Atom::Float(x), Atom::Int(y)) => *x == (*y as f64),
             (Atom::Bool(x), Atom::Bool(y)) => x == y,
             (Atom::Str(x), Atom::Str(y)) => x == y,
-            _ => return Err(EvalError::TypeError("'==' expects comparable types")),
+            _ => return Err(Error::TypeMismatch("'==' expects comparable types".into())),
         })
     }
 }
@@ -318,6 +280,7 @@ mod tests {
         fn new() -> Self {
             Self { map: HashMap::new() }
         }
+        #[allow(dead_code)]
         fn put_path(mut self, path: &str, var: Box<dyn Variable>) -> Self {
             self.map.insert(path.to_string(), var);
             self
@@ -336,10 +299,10 @@ mod tests {
             if key == "math.add" {
                 return Some(Box::new(SimpleFuncVar(|args| {
                     if args.len() != 2 {
-                        return Err(EvalError::FunctionError("need 2 args".into()));
+                        return Err(Error::EvaluationFailed("need 2 args".into()));
                     }
-                    let a = args[0].to_float_lossy().ok_or(EvalError::TypeError("number"))?;
-                    let b = args[1].to_float_lossy().ok_or(EvalError::TypeError("number"))?;
+                    let a = args[0].to_float_lossy().ok_or(Error::TypeMismatch("number".into()))?;
+                    let b = args[1].to_float_lossy().ok_or(Error::TypeMismatch("number".into()))?;
                     Ok(Atom::Float(a + b))
                 })) as Box<dyn Variable>);
             }
@@ -367,7 +330,7 @@ mod tests {
         assert_eq!(ev.evaluate(&parse("1 + 2 * 3").unwrap()).unwrap(), Atom::Int(7));
         assert_eq!(ev.evaluate(&parse("true && !false").unwrap()).unwrap(), Atom::Bool(true));
         match ev.evaluate(&parse("1/0").unwrap()) {
-            Err(EvalError::DivideByZero) => (),
+            Err(Error::DivideByZero) => (),
             other => panic!("expected div by zero, got {:?}", other),
         }
     }
@@ -396,7 +359,7 @@ mod tests {
                 continue;
             }
             let parts: Vec<&str> = line.splitn(2, "=>").collect();
-            assert!(parts.len() == 2, "Invalid test case format on line {}: '{}'", line_no, raw_line);
+            assert_eq!(parts.len(), 2, "Invalid test case format on line {}: '{}'", line_no, raw_line);
             let expr_src = parts[0].trim();
             let expected_str = parts[1].trim();
 
@@ -437,7 +400,7 @@ mod tests {
 
         // missing closing brace should error
         match ev.evaluate_interpolated("bad ${1+2") {
-            Err(EvalError::ParseFailed(_)) => (),
+            Err(Error::ParseFailed(_)) => (),
             other => panic!("expected parse error, got {:?}", other),
         }
     }

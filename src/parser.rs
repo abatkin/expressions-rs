@@ -1,84 +1,5 @@
+use crate::types::{Atom, BinaryOp, Error, Expr, Result, UnaryOp};
 use chumsky::prelude::*;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Atom {
-    Int(i64),
-    Float(f64),
-    Str(String),
-    Bool(bool),
-}
-
-impl Atom {
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Atom::Int(i) => Some(*i != 0),
-            Atom::Float(f) => Some(*f != 0.0),
-            Atom::Str(s) if s == "true" || s == "false" => Some(s == "true"),
-            Atom::Bool(b) => Some(*b),
-            _ => None,
-        }
-    }
-    pub fn as_int(&self) -> Option<i64> {
-        match self {
-            Atom::Int(i) => Some(*i),
-            _ => None,
-        }
-    }
-    pub fn as_float(&self) -> Option<f64> {
-        match self {
-            Atom::Float(f) => Some(*f),
-            _ => None,
-        }
-    }
-    pub fn as_str(&self) -> String {
-        match self {
-            Atom::Str(s) => s.clone(),
-            Atom::Int(i) => i.to_string(),
-            Atom::Float(f) => f.to_string(),
-            Atom::Bool(b) => b.to_string(),
-        }
-    }
-    pub fn to_float_lossy(&self) -> Option<f64> {
-        match self {
-            Atom::Float(f) => Some(*f),
-            Atom::Int(i) => Some(*i as f64),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
-    Basic(Atom),
-    Path(Vec<String>),
-    Member { object: Box<Expr>, field: String },
-    Call { callee: Box<Expr>, args: Vec<Expr> },
-    Unary { op: UnaryOp, expr: Box<Expr> },
-    Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnaryOp {
-    Not,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOp {
-    Or,
-    And,
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    Pow,
-}
 
 fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Parser<'src, &'src str, Expr> + Clone) {
     // Whitespace and comments
@@ -244,22 +165,22 @@ fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
     program.then_ignore(end())
 }
 
-// Main entry point for parsing an expression, returns the AST (Expr) or error string
-pub fn parse(input: &str) -> Result<Expr, String> {
+// Main entry point for parsing an expression, returns the AST (Expr) or Error
+pub fn parse(input: &str) -> Result<Expr> {
     match parser().parse(input).into_result() {
         Ok(ast) => Ok(ast),
         Err(errs) => {
             let joined = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
             let snippet: String = input.chars().take(80).collect();
             let msg = if joined.trim().is_empty() { "parse error".to_string() } else { joined };
-            Err(format!("{} (near: '{}')", msg, snippet))
+            Err(Error::ParseFailed(msg, snippet))
         }
     }
 }
 
 // Parse an expression that must be terminated by a closing '}' and return
 // the parsed Expr along with the number of bytes consumed (including the '}').
-pub(crate) fn parse_in_braces(input: &str) -> Result<(Expr, usize), String> {
+pub(crate) fn parse_in_braces(input: &str) -> Result<(Expr, usize)> {
     // Use the existing expression parser and require a trailing '}' using parser combinators.
     // This leverages the parser's own handling of strings, escapes, and nesting instead of manual scanning.
     let (_spacer, expr) = expr_and_spacer();
@@ -278,7 +199,7 @@ pub(crate) fn parse_in_braces(input: &str) -> Result<(Expr, usize), String> {
             let joined = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
             let snippet: String = input.chars().take(80).collect();
             let msg = if joined.trim().is_empty() { "parse error".to_string() } else { joined };
-            Err(format!("{} inside interpolation (near: '{}')", msg, snippet))
+            Err(Error::ParseFailed(msg, snippet))
         }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "simple-expressions"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A small expression language with variables, function calls, simple types and common operators"
@@ -13,3 +13,4 @@ categories = ["template-engine", "compilers", "parser-implementations"]
 
 [dependencies]
 chumsky = "0.10"
+thiserror = "2"
