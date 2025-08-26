@@ -1,0 +1,33 @@
+name: Build and Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-rust:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+
+    - name: Format check
+      run: cargo fmt --all -- --check
+
+    - name: Clippy check
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Build
+      run: cargo build --verbose
+
+    - name: Test
+      run: cargo test --verbose
+
+    - name: Build release binary
+      run: cargo build --release
