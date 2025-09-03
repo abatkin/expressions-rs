@@ -50,8 +50,9 @@ impl Atom {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Basic(Atom),
-    Path(Vec<String>),
+    Var(String),
     Member { object: Box<Expr>, field: String },
+    Index { object: Box<Expr>, index: Box<Expr> },
     Call { callee: Box<Expr>, args: Vec<Expr> },
     Unary { op: UnaryOp, expr: Box<Expr> },
     Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },

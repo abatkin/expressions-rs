@@ -1,5 +1,6 @@
 use crate::parser::parse;
 use crate::types::{Atom, BinaryOp, Error, Expr, Result, UnaryOp};
+use std::slice;
 
 pub trait Variable {
     fn as_atom(&self) -> Result<Atom>;
@@ -70,9 +71,10 @@ impl<R: VariableResolver> Evaluator<R> {
                 Atom::Str(s) => Ok(Atom::Str(s.clone())),
                 Atom::Bool(b) => Ok(Atom::Bool(*b)),
             },
-            Expr::Path(p) => self.eval_path(p),
+            Expr::Var(name) => self.eval_path(slice::from_ref(name)),
             Expr::Call { callee, args } => self.eval_call(callee, args),
             Expr::Member { object, field } => self.eval_member(object, field),
+            Expr::Index { object: _, index: _ } => Err(Error::Unsupported("indexing is not yet supported in evaluator (Step 1)".into())),
             Expr::Unary { op, expr } => {
                 let v = self.evaluate(expr)?;
                 match op {
@@ -94,11 +96,11 @@ impl<R: VariableResolver> Evaluator<R> {
     }
 
     fn eval_call(&self, callee: &Expr, args: &Vec<Expr>) -> Result<Atom> {
-        // Only support calling a Path directly for now
-        let path = match callee {
-            Expr::Path(p) => p.clone(),
+        // Only support calling a Var or a flattenable member chain for now
+        let path: Vec<String> = match callee {
+            Expr::Var(name) => vec![name.clone()],
             Expr::Member { object, field } => {
-                // If member chain is purely a Path-based object, flatten and call
+                // If member chain is purely a Var-based path, flatten and call
                 if let Some(mut base) = self.flatten_member_path(object) {
                     base.push(field.clone());
                     base
@@ -130,10 +132,13 @@ impl<R: VariableResolver> Evaluator<R> {
         Err(Error::Unsupported("member access on non-path is unsupported".into()))
     }
 
+    /// TEMPORARY (Step 1): Flatten a member chain into a Vec<String> if it consists only of
+    /// a base variable and dot members. This is a compatibility shim for the old resolver API.
+    /// TODO(step 2): Remove this once full value traversal for members/indexing is implemented.
     #[allow(clippy::only_used_in_recursion)]
     fn flatten_member_path(&self, expr: &Expr) -> Option<Vec<String>> {
         match expr {
-            Expr::Path(p) => Some(p.clone()),
+            Expr::Var(name) => Some(vec![name.clone()]),
             Expr::Member { object, field } => {
                 let mut left = self.flatten_member_path(object)?;
                 left.push(field.clone());
