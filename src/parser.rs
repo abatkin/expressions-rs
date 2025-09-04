@@ -1,6 +1,14 @@
 use crate::types::{Atom, BinaryOp, Error, Expr, Result, UnaryOp};
 use chumsky::prelude::*;
 
+// Postfix operators: call, index, member
+#[derive(Debug, Clone)]
+enum Postfix {
+    Call(Vec<Expr>),
+    Index(Expr),
+    Member(String),
+}
+
 fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Parser<'src, &'src str, Expr> + Clone) {
     // Whitespace and comments
     let line_comment = just("//").ignore_then(any().filter(|c: &char| *c != '\n').repeated()).ignored();
@@ -9,8 +17,6 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
 
     // Identifiers
     let ident = text::ident().map(|s: &str| s.to_string());
-
-    let path = ident.separated_by(just('.')).at_least(1).collect::<Vec<_>>();
 
     // Strings: support single or double quotes with escapes \n, \\, \", \'
     let escape = just('\\').ignore_then(choice((
@@ -47,7 +53,7 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
 
     // Parentheses grouping will be handled via recursive expression parser
     let expr = recursive(|expr| {
-        // Postfix: function call (single) after a dotted path
+        // Arguments list for calls
         let args = expr
             .clone()
             .separated_by(just(',').padded_by(spacer))
@@ -55,30 +61,36 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
             .collect::<Vec<_>>()
             .delimited_by(just('(').padded_by(spacer), just(')').padded_by(spacer));
 
-        let path_or_call = path.then(args.or_not()).map(|(p, maybe_args)| match maybe_args {
-            Some(a) => Expr::Call { callee: Box::new(Expr::Path(p)), args: a },
-            None => Expr::Path(p),
-        });
+        // Primary: literals, identifiers as Var, or parenthesized
+        let primary = choice((
+            choice((string_sq, string_dq, number, boolean.clone())).map(Expr::Basic),
+            ident.map(Expr::Var),
+            expr.clone().delimited_by(just('(').padded_by(spacer), just(')').padded_by(spacer)),
+        ))
+        .padded_by(spacer);
 
-        let member_chain = just('.').ignore_then(text::ident().map(|s: &str| s.to_string())).repeated().collect::<Vec<_>>();
+        let index = expr.clone().delimited_by(just('[').padded_by(spacer), just(']').padded_by(spacer)).map(Postfix::Index);
 
-        let path_call_and_members = path_or_call.then(member_chain).map(|(base, tail)| {
+        let member = just('.').ignore_then(text::ident().map(|s: &str| s.to_string())).map(Postfix::Member);
+
+        let call = args.clone().map(Postfix::Call);
+
+        let postfix_chain = choice((call, index, member)).repeated().collect::<Vec<_>>();
+
+        let postfix = primary.then(postfix_chain).map(|(base, posts)| {
             let mut acc = base;
-            for name in tail {
-                acc = Expr::Member { object: Box::new(acc), field: name };
+            for p in posts {
+                acc = match p {
+                    Postfix::Call(a) => Expr::Call { callee: Box::new(acc), args: a },
+                    Postfix::Index(i) => Expr::Index { object: Box::new(acc), index: Box::new(i) },
+                    Postfix::Member(f) => Expr::Member { object: Box::new(acc), field: f },
+                };
             }
             acc
         });
 
-        let primary = choice((
-            choice((string_sq, string_dq, number, boolean.clone())).map(Expr::Basic),
-            path_call_and_members,
-            expr.delimited_by(just('(').padded_by(spacer), just(')').padded_by(spacer)),
-        ))
-        .padded_by(spacer);
-
         // Unary '!'
-        let unary = just('!').repeated().foldr(primary, |_bang, rhs| Expr::Unary { op: UnaryOp::Not, expr: Box::new(rhs) });
+        let unary = just('!').repeated().foldr(postfix, |_bang, rhs| Expr::Unary { op: UnaryOp::Not, expr: Box::new(rhs) });
 
         // Exponentiation '^' (right-assoc) using recursion
         let pow = recursive(|pow| {
@@ -149,7 +161,7 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
     (spacer, expr)
 }
 
-fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
+pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
     let (spacer, expr) = expr_and_spacer();
 
     // Allow multiple expressions separated by whitespace/comments and take the last one
@@ -243,6 +255,197 @@ mod tests {
         let ast = parse("foo.bar(baz, 1+2).qux").unwrap();
         // Just check it parses
         let _ = ast;
+    }
+
+    #[test]
+    fn postfix_member_chain_var() {
+        let ast = parse("a.b.c").unwrap();
+        let expected = Expr::Member {
+            object: Box::new(Expr::Member {
+                object: Box::new(Expr::Var("a".into())),
+                field: "b".into(),
+            }),
+            field: "c".into(),
+        };
+        assert_eq!(ast, expected);
+    }
+
+    #[test]
+    fn postfix_mixed_chain_shapes() {
+        let ast = parse("a.b(1, 2).c[0].d(e)").unwrap();
+        // a.b(1,2).c[0].d(e)
+        // Verify outermost is Call(...)
+        match ast {
+            Expr::Call { ref callee, ref args } => {
+                assert_eq!(args.len(), 1);
+                // callee should be Member(..., field: "d")
+                match **callee {
+                    Expr::Member { ref object, ref field } => {
+                        assert_eq!(field, "d");
+                        // object should be Index(Member(Call(Member(Var("a"),"b"), [1,2]), field:"c"), index:0)
+                        match **object {
+                            Expr::Index { ref object, ref index } => {
+                                // index == 0
+                                assert_eq!(**index, Expr::Basic(Atom::Int(0)));
+                                // object is Member(..., "c")
+                                match **object {
+                                    Expr::Member { ref object, ref field } => {
+                                        assert_eq!(field, "c");
+                                        // object is Call(Member(Var("a"),"b"), [1,2])
+                                        match **object {
+                                            Expr::Call { ref callee, ref args } => {
+                                                assert_eq!(args.len(), 2);
+                                                assert_eq!(args[0], Expr::Basic(Atom::Int(1)));
+                                                // second arg is 2
+                                                assert_eq!(args[1], Expr::Basic(Atom::Int(2)));
+                                                // callee: Member(Var("a"),"b")
+                                                let expected_callee = Expr::Member {
+                                                    object: Box::new(Expr::Var("a".into())),
+                                                    field: "b".into(),
+                                                };
+                                                assert_eq!(**callee, expected_callee);
+                                            }
+                                            _ => panic!("expected call before .c"),
+                                        }
+                                    }
+                                    _ => panic!("expected member .c"),
+                                }
+                            }
+                            _ => panic!("expected index [0]"),
+                        }
+                    }
+                    _ => panic!("expected outer member .d"),
+                }
+            }
+            _ => panic!("expected outer call (e)"),
+        }
+    }
+
+    #[test]
+    fn postfix_parenthesized_base() {
+        // (a + b).c(d)
+        let ast = parse("(a + b).c(d)").unwrap();
+        match ast {
+            Expr::Call { callee, args } => {
+                assert_eq!(args.len(), 1);
+                match *callee {
+                    Expr::Member { object, field } => {
+                        assert_eq!(field, "c");
+                        match *object {
+                            Expr::Binary { op: BinaryOp::Add, .. } => (),
+                            _ => panic!("member should be applied to parenthesized binary expr"),
+                        }
+                    }
+                    _ => panic!("expected member callee"),
+                }
+            }
+            _ => panic!("expected call"),
+        }
+    }
+
+    #[test]
+    fn postfix_call_chains() {
+        let ast = parse("foo(1)(2)(3)").unwrap();
+        // foo(1)(2)(3) => Call(Call(Call(Var("foo"),1),2),3)
+        fn is_int(e: &Expr, v: i64) -> bool {
+            *e == Expr::Basic(Atom::Int(v))
+        }
+        match ast {
+            Expr::Call { callee: c3, args: a3 } => {
+                assert!(a3.len() == 1 && is_int(&a3[0], 3));
+                match *c3 {
+                    Expr::Call { callee: c2, args: a2 } => {
+                        assert!(a2.len() == 1 && is_int(&a2[0], 2));
+                        match *c2 {
+                            Expr::Call { callee: c1, args: a1 } => {
+                                assert!(a1.len() == 1 && is_int(&a1[0], 1));
+                                assert_eq!(*c1, Expr::Var("foo".into()));
+                            }
+                            _ => panic!("expected second call"),
+                        }
+                    }
+                    _ => panic!("expected first call"),
+                }
+            }
+            _ => panic!("expected outer call"),
+        }
+    }
+
+    #[test]
+    fn postfix_index_chains() {
+        let ast = parse("arr[1+2][0]").unwrap();
+        match ast {
+            Expr::Index { object, index } => {
+                assert_eq!(*index, Expr::Basic(Atom::Int(0)));
+                match *object {
+                    Expr::Index { object, index } => {
+                        match *index {
+                            Expr::Binary { op: BinaryOp::Add, .. } => (),
+                            _ => panic!("expected 1+2 as index expr"),
+                        }
+                        assert_eq!(*object, Expr::Var("arr".into()));
+                    }
+                    _ => panic!("expected inner index"),
+                }
+            }
+            _ => panic!("expected outer index"),
+        }
+    }
+
+    #[test]
+    fn precedence_with_postfix_vs_add() {
+        let ast = parse("a.b + c.d").unwrap();
+        match ast {
+            Expr::Binary { op: BinaryOp::Add, left, right } => {
+                // both sides should be postfix chains
+                match *left {
+                    Expr::Member { object, field } => {
+                        assert_eq!(field, "b");
+                        assert_eq!(*object, Expr::Var("a".into()));
+                    }
+                    _ => panic!("left not a member"),
+                }
+                match *right {
+                    Expr::Member { object, field } => {
+                        assert_eq!(field, "d");
+                        assert_eq!(*object, Expr::Var("c".into()));
+                    }
+                    _ => panic!("right not a member"),
+                }
+            }
+            _ => panic!("top not add"),
+        }
+    }
+
+    #[test]
+    fn precedence_with_postfix_and_logical() {
+        let ast = parse("a.b(c) && d.e").unwrap();
+        match ast {
+            Expr::Binary { op: BinaryOp::And, left, right } => {
+                match *left {
+                    Expr::Call { callee, args } => {
+                        assert_eq!(args.len(), 1);
+                        assert_eq!(args[0], Expr::Var("c".into()));
+                        match *callee {
+                            Expr::Member { object, field } => {
+                                assert_eq!(field, "b");
+                                assert_eq!(*object, Expr::Var("a".into()));
+                            }
+                            _ => panic!("left not call(member)"),
+                        }
+                    }
+                    _ => panic!("left not call"),
+                }
+                match *right {
+                    Expr::Member { object, field } => {
+                        assert_eq!(field, "e");
+                        assert_eq!(*object, Expr::Var("d".into()));
+                    }
+                    _ => panic!("right not member"),
+                }
+            }
+            _ => panic!("top not &&"),
+        }
     }
 
     #[test]

@@ -14,8 +14,11 @@ A small expression language with variables, function calls, simple types and com
   - Parentheses ( ... ) group sub-expressions.
 - Identifiers, variables and functions
   - Identifiers follow the usual rules: start with a letter or underscore, then letters, digits, or underscores.
-  - Dotted paths are supported to reference nested names: a.b.c. 
-  - An identifier may be followed by a function call with parentheses and parameters: ns.func(arg1, arg2).
+  - Postfix chaining after any primary expression:
+    - Member access: .field (dictionary/object field lookup, no method dispatch)
+    - Indexing: [expr]
+    - Calls: (arg1, arg2)
+    - These can be chained left-to-right: `a.b.c`, `a.b(1, 2).c[0].d(e)`, `foo(1)(2)(3)`, `arr[1+2][0]`.
 - Operators
   - Arithmetic: +, -, *, /, %, ^
   - Comparisons: <, <=, >, >=, ==, !=
