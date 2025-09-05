@@ -51,9 +51,17 @@ impl<R: VariableResolver> Evaluator<R> {
             }
             Expr::DictLiteral(pairs) => {
                 let mut map = std::collections::BTreeMap::new();
-                for (k, e) in pairs {
-                    let v = self.evaluate(e)?;
-                    map.insert(k.clone(), v);
+                for (k_expr, v_expr) in pairs {
+                    // evaluate key first, then value, left-to-right
+                    let key_v = self.evaluate(k_expr)?;
+                    let key_s = if let Value::Primitive(Primitive::Str(s)) = key_v {
+                        s
+                    } else {
+                        return Err(Error::TypeMismatch("dict key must be a string".into()));
+                    };
+                    let v = self.evaluate(v_expr)?;
+                    // duplicates allowed: last wins
+                    map.insert(key_s, v);
                 }
                 Ok(Value::Dict(map))
             }
@@ -449,6 +457,13 @@ mod tests {
         }
         // Nested
         assert_eq!(ev.evaluate(&parse("{\"xs\": [10, 20]}[\"xs\"][1]").unwrap()).unwrap(), Value::from(20i64));
+
+        // Computed dict key in literal and runtime enforcement of key type
+        assert_eq!(ev.evaluate(&parse("{\"a\" + \"b\": 1}[\"ab\"]").unwrap()).unwrap(), Value::from(1i64));
+        match ev.evaluate(&parse("{1: 2}").unwrap()) {
+            Err(Error::TypeMismatch(msg)) => assert_eq!(msg, "dict key must be a string"),
+            other => panic!("expected TypeMismatch for dict key, got {:?}", other),
+        }
     }
 
     #[test]

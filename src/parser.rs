@@ -70,9 +70,8 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
             .delimited_by(just('[').padded_by(spacer), just(']').padded_by(spacer))
             .map(Expr::ListLiteral);
 
-        // Dict literal: {"key": expr, ...} with string keys only
-        let str_lit = choice((string_sq, string_dq)).map(|p| if let Primitive::Str(s) = p { s } else { unreachable!() });
-        let dict_pair = str_lit.then_ignore(just(':').padded_by(spacer)).then(expr.clone());
+        // Dict literal: {key_expr: value_expr, ...} where key_expr can be any expression; runtime enforces string keys
+        let dict_pair = expr.clone().then_ignore(just(':').padded_by(spacer)).then(expr.clone());
         let dict_lit = dict_pair
             .separated_by(just(',').padded_by(spacer))
             .allow_trailing()
@@ -293,19 +292,18 @@ mod tests {
     fn dict_literals() {
         use Expr::*;
         let d = parse("{\"a\": 1, \"b\": 2}").unwrap();
-        assert_eq!(d, DictLiteral(vec![("a".into(), Literal(Primitive::Int(1))), ("b".into(), Literal(Primitive::Int(2)))]));
+        assert_eq!(
+            d,
+            DictLiteral(vec![(Literal(Primitive::Str("a".into())), Literal(Primitive::Int(1))), (Literal(Primitive::Str("b".into())), Literal(Primitive::Int(2))),])
+        );
         let d2 = parse("{\"a\": 1,}").unwrap();
-        assert_eq!(d2, DictLiteral(vec![("a".into(), Literal(Primitive::Int(1)))]));
+        assert_eq!(d2, DictLiteral(vec![(Literal(Primitive::Str("a".into())), Literal(Primitive::Int(1)))]));
 
-        // reject non-string keys
-        match parse("{a: 1}") {
-            Err(Error::ParseFailed(_, _)) => (),
-            other => panic!("expected parse failed, got {:?}", other),
-        }
-        match parse("{1: 2}") {
-            Err(Error::ParseFailed(_, _)) => (),
-            other => panic!("expected parse failed, got {:?}", other),
-        }
+        // allow non-string keys at parse-time; runtime will enforce type
+        assert_eq!(parse("{a: 1}").unwrap(), DictLiteral(vec![(Var("a".into()), Literal(Primitive::Int(1)))]));
+        assert_eq!(parse("{1: 2}").unwrap(), DictLiteral(vec![(Literal(Primitive::Int(1)), Literal(Primitive::Int(2)))]));
+
+        // still reject malformed missing colon
         match parse("{\"a\" 1}") {
             Err(Error::ParseFailed(_, _)) => (),
             other => panic!("expected parse failed, got {:?}", other),

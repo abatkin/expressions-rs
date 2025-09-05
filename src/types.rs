@@ -270,7 +270,7 @@ pub enum Expr {
     Literal(Primitive),
     Var(String),
     ListLiteral(Vec<Expr>),
-    DictLiteral(Vec<(String, Expr)>),
+    DictLiteral(Vec<(Expr, Expr)>),
     Member { object: Box<Expr>, field: String },
     Index { object: Box<Expr>, index: Box<Expr> },
     Call { callee: Box<Expr>, args: Vec<Expr> },
