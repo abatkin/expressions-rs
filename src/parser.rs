@@ -61,8 +61,29 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
             .collect::<Vec<_>>()
             .delimited_by(just('(').padded_by(spacer), just(')').padded_by(spacer));
 
-        // Primary: literals, identifiers as Var, or parenthesized
+        // List literal: [expr, expr, ...]
+        let list_lit = expr
+            .clone()
+            .separated_by(just(',').padded_by(spacer))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just('[').padded_by(spacer), just(']').padded_by(spacer))
+            .map(Expr::ListLiteral);
+
+        // Dict literal: {"key": expr, ...} with string keys only
+        let str_lit = choice((string_sq, string_dq)).map(|p| if let Primitive::Str(s) = p { s } else { unreachable!() });
+        let dict_pair = str_lit.then_ignore(just(':').padded_by(spacer)).then(expr.clone());
+        let dict_lit = dict_pair
+            .separated_by(just(',').padded_by(spacer))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just('{').padded_by(spacer), just('}').padded_by(spacer))
+            .map(Expr::DictLiteral);
+
+        // Primary: literals, identifiers as Var, parenthesized, list/dict literals
         let primary = choice((
+            dict_lit,
+            list_lit,
             choice((string_sq, string_dq, number, boolean.clone())).map(Expr::Literal),
             ident.map(Expr::Var),
             expr.clone().delimited_by(just('(').padded_by(spacer), just(')').padded_by(spacer)),
@@ -255,6 +276,96 @@ mod tests {
         let ast = parse("foo.bar(baz, 1+2).qux").unwrap();
         // Just check it parses
         let _ = ast;
+    }
+
+    #[test]
+    fn list_literals() {
+        use Expr::*;
+        assert_eq!(parse("[1, 2, 3]").unwrap(), ListLiteral(vec![Literal(Primitive::Int(1)), Literal(Primitive::Int(2)), Literal(Primitive::Int(3))]));
+        assert_eq!(parse("[1,2,]").unwrap(), ListLiteral(vec![Literal(Primitive::Int(1)), Literal(Primitive::Int(2))]));
+        assert_eq!(
+            parse("[1, [2], 3]").unwrap(),
+            ListLiteral(vec![Literal(Primitive::Int(1)), ListLiteral(vec![Literal(Primitive::Int(2))]), Literal(Primitive::Int(3)),])
+        );
+    }
+
+    #[test]
+    fn dict_literals() {
+        use Expr::*;
+        let d = parse("{\"a\": 1, \"b\": 2}").unwrap();
+        assert_eq!(d, DictLiteral(vec![("a".into(), Literal(Primitive::Int(1))), ("b".into(), Literal(Primitive::Int(2)))]));
+        let d2 = parse("{\"a\": 1,}").unwrap();
+        assert_eq!(d2, DictLiteral(vec![("a".into(), Literal(Primitive::Int(1)))]));
+
+        // reject non-string keys
+        match parse("{a: 1}") {
+            Err(Error::ParseFailed(_, _)) => (),
+            other => panic!("expected parse failed, got {:?}", other),
+        }
+        match parse("{1: 2}") {
+            Err(Error::ParseFailed(_, _)) => (),
+            other => panic!("expected parse failed, got {:?}", other),
+        }
+        match parse("{\"a\" 1}") {
+            Err(Error::ParseFailed(_, _)) => (),
+            other => panic!("expected parse failed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn postfix_combinations() {
+        use Expr::*;
+        let ast = parse("{\"xs\": [10, 20]}[\"xs\"][1]").unwrap();
+        // Expect Index(Index(DictLiteral, "xs"), 1)
+        match ast {
+            Index { object, index } => {
+                assert_eq!(*index, Literal(Primitive::Int(1)));
+                match *object {
+                    Index { object: inner_obj, index: inner_idx } => {
+                        match *inner_idx {
+                            Literal(Primitive::Str(ref s)) => assert_eq!(s, "xs"),
+                            _ => panic!("inner index should be string literal"),
+                        }
+                        match *inner_obj {
+                            DictLiteral(_) => (),
+                            _ => panic!("inner object should be dict literal"),
+                        }
+                    }
+                    _ => panic!("outer object should be index"),
+                }
+            }
+            _ => panic!("bad ast shape: {:?}", ast),
+        }
+
+        let ast2 = parse("{\"a\": 1}.a").unwrap();
+        match ast2 {
+            Member { ref object, ref field } => {
+                assert_eq!(field, "a");
+                match **object {
+                    DictLiteral(_) => (),
+                    _ => panic!("member base should be dict literal"),
+                }
+            }
+            _ => panic!("bad ast shape"),
+        }
+
+        let ast3 = parse("{\"a\": [1,2,3]}.a[0]").unwrap();
+        match ast3 {
+            Index { object, index } => {
+                assert_eq!(*index, Literal(Primitive::Int(0)));
+                match *object {
+                    Member { object: base, field } => {
+                        assert_eq!(field, "a");
+                        match *base {
+                            DictLiteral(_) => (),
+                            _ => panic!("member base should be dict literal"),
+                        }
+                    }
+                    _ => panic!("expected member then index"),
+                }
+            }
+            _ => panic!("bad ast shape"),
+        }
     }
 
     #[test]

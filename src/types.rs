@@ -20,6 +20,16 @@ pub enum Error {
     ParseFailed(String, String),
     #[error("unsupported operation: {0}")]
     Unsupported(String),
+    #[error("index out of bounds: {index} (len: {len})")]
+    IndexOutOfBounds { index: i64, len: usize },
+    #[error("{target}: {message}")]
+    WrongIndexType { target: &'static str, message: String },
+    #[error("not a dict")]
+    NotADict,
+    #[error("not indexable: {0}")]
+    NotIndexable(String),
+    #[error("no such key: {0}")]
+    NoSuchKey(String),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -152,8 +162,14 @@ impl Value {
     pub fn as_str_lossy(&self) -> String {
         match self {
             Value::Primitive(p) => p.as_str_lossy(),
-            Value::List(_) => "[list]".into(),
-            Value::Dict(_) => "{dict}".into(),
+            Value::List(vs) => {
+                let inner = vs.iter().map(|v| v.as_str_lossy()).collect::<Vec<_>>().join(", ");
+                format!("[{}]", inner)
+            }
+            Value::Dict(m) => {
+                let inner = m.iter().map(|(k, v)| format!("{}: {}", k, v.as_str_lossy())).collect::<Vec<_>>().join(", ");
+                format!("{{{}}}", inner)
+            }
             Value::Func(_) => "<func>".into(),
         }
     }
@@ -253,6 +269,8 @@ impl TryFrom<Value> for String {
 pub enum Expr {
     Literal(Primitive),
     Var(String),
+    ListLiteral(Vec<Expr>),
+    DictLiteral(Vec<(String, Expr)>),
     Member { object: Box<Expr>, field: String },
     Index { object: Box<Expr>, index: Box<Expr> },
     Call { callee: Box<Expr>, args: Vec<Expr> },

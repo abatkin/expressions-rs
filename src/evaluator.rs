@@ -42,9 +42,72 @@ impl<R: VariableResolver> Evaluator<R> {
         match expr {
             Expr::Literal(p) => Ok(Value::Primitive(p.clone())),
             Expr::Var(name) => self.eval_var(name),
+            Expr::ListLiteral(items) => {
+                let mut vals = Vec::with_capacity(items.len());
+                for e in items {
+                    vals.push(self.evaluate(e)?);
+                }
+                Ok(Value::List(vals))
+            }
+            Expr::DictLiteral(pairs) => {
+                let mut map = std::collections::BTreeMap::new();
+                for (k, e) in pairs {
+                    let v = self.evaluate(e)?;
+                    map.insert(k.clone(), v);
+                }
+                Ok(Value::Dict(map))
+            }
             Expr::Call { callee, args } => self.eval_call(callee, args),
-            Expr::Member { .. } => Err(Error::Unsupported("member access is not supported in evaluator".into())),
-            Expr::Index { .. } => Err(Error::Unsupported("indexing is not yet supported in evaluator".into())),
+            Expr::Member { object, field } => {
+                let obj = self.evaluate(object)?;
+                match obj {
+                    Value::Dict(ref m) => m.get(field).cloned().ok_or_else(|| Error::NoSuchKey(field.clone())),
+                    _ => Err(Error::NotADict),
+                }
+            }
+            Expr::Index { object, index } => {
+                let obj_v = self.evaluate(object)?;
+                match obj_v {
+                    Value::List(vs) => {
+                        let idx_v = self.evaluate(index)?;
+                        if let Value::Primitive(Primitive::Int(i)) = idx_v {
+                            let len = vs.len() as i64;
+                            let eff = if i < 0 { len + i } else { i };
+                            if eff < 0 || eff >= len {
+                                return Err(Error::IndexOutOfBounds { index: i, len: vs.len() });
+                            }
+                            Ok(vs[eff as usize].clone())
+                        } else {
+                            Err(Error::WrongIndexType {
+                                target: "list",
+                                message: "expected int index".into(),
+                            })
+                        }
+                    }
+                    Value::Dict(m) => {
+                        let idx_v = self.evaluate(index)?;
+                        if let Value::Primitive(Primitive::Str(s)) = idx_v {
+                            m.get(&s).cloned().ok_or(Error::NoSuchKey(s))
+                        } else {
+                            Err(Error::WrongIndexType {
+                                target: "dict",
+                                message: "expected string key".into(),
+                            })
+                        }
+                    }
+                    other => {
+                        let t = match other {
+                            Value::Primitive(Primitive::Int(_)) | Value::Primitive(Primitive::Float(_)) => "number",
+                            Value::Primitive(Primitive::Str(_)) => "string",
+                            Value::Primitive(Primitive::Bool(_)) => "bool",
+                            Value::Func(_) => "func",
+                            Value::List(_) => "list",
+                            Value::Dict(_) => "dict",
+                        };
+                        Err(Error::NotIndexable(t.into()))
+                    }
+                }
+            }
             Expr::Unary { op, expr } => {
                 let v = self.evaluate(expr)?;
                 match op {
@@ -329,5 +392,73 @@ mod tests {
             Err(Error::ParseFailed(_, _)) => (),
             other => panic!("expected parse error, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn eval_lists_and_indexing() {
+        let ev = Evaluator::new(MockResolver::new());
+        // [10, 20, 30][1] => 20
+        assert_eq!(ev.evaluate(&parse("[10, 20, 30][1]").unwrap()).unwrap(), Value::from(20i64));
+        // [10][1] => IndexOutOfBounds
+        match ev.evaluate(&parse("[10][1]").unwrap()) {
+            Err(Error::IndexOutOfBounds { index, len }) => {
+                assert_eq!(index, 1);
+                assert_eq!(len, 1);
+            }
+            other => panic!("expected IndexOutOfBounds, got {:?}", other),
+        }
+        // [10]["0"] => WrongIndexType
+        match ev.evaluate(&parse("[10][\"0\"]").unwrap()) {
+            Err(Error::WrongIndexType { target, .. }) => assert_eq!(target, "list"),
+            other => panic!("expected WrongIndexType(list), got {:?}", other),
+        }
+        // negative indices
+        assert_eq!(ev.evaluate(&parse("[10, 20, 30][-1]").unwrap()).unwrap(), Value::from(30i64));
+        assert_eq!(ev.evaluate(&parse("[10, 20, 30][-3]").unwrap()).unwrap(), Value::from(10i64));
+        match ev.evaluate(&parse("[10, 20, 30][-4]").unwrap()) {
+            Err(Error::IndexOutOfBounds { index, len }) => {
+                assert_eq!(index, -4);
+                assert_eq!(len, 3);
+            }
+            other => panic!("expected IndexOutOfBounds, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_dict_and_member() {
+        let ev = Evaluator::new(MockResolver::new());
+        // Dict via [key]
+        assert_eq!(ev.evaluate(&parse("{\"a\": 1, \"b\": 2}[\"b\"]").unwrap()).unwrap(), Value::from(2i64));
+        match ev.evaluate(&parse("{\"a\": 1}[\"z\"]").unwrap()) {
+            Err(Error::NoSuchKey(k)) => assert_eq!(k, "z"),
+            other => panic!("expected NoSuchKey, got {:?}", other),
+        }
+        match ev.evaluate(&parse("{\"a\": 1}[0]").unwrap()) {
+            Err(Error::WrongIndexType { target, .. }) => assert_eq!(target, "dict"),
+            other => panic!("expected WrongIndexType(dict), got {:?}", other),
+        }
+        // Member sugar
+        assert_eq!(ev.evaluate(&parse("{\"a\": 1}.a").unwrap()).unwrap(), Value::from(1i64));
+        match ev.evaluate(&parse("{\"a\": 1}.z").unwrap()) {
+            Err(Error::NoSuchKey(k)) => assert_eq!(k, "z"),
+            other => panic!("expected NoSuchKey, got {:?}", other),
+        }
+        match ev.evaluate(&parse("[1].len").unwrap()) {
+            Err(Error::NotADict) => (),
+            other => panic!("expected NotADict, got {:?}", other),
+        }
+        // Nested
+        assert_eq!(ev.evaluate(&parse("{\"xs\": [10, 20]}[\"xs\"][1]").unwrap()).unwrap(), Value::from(20i64));
+    }
+
+    #[test]
+    fn eval_truthiness_lists_dicts() {
+        let ev = Evaluator::new(MockResolver::new());
+        assert_eq!(ev.evaluate(&parse("![]").unwrap()).unwrap(), Value::from(true));
+        assert_eq!(ev.evaluate(&parse("!![]").unwrap()).unwrap(), Value::from(false));
+        assert_eq!(ev.evaluate(&parse("![1]").unwrap()).unwrap(), Value::from(false));
+        assert_eq!(ev.evaluate(&parse("!![1]").unwrap()).unwrap(), Value::from(true));
+        assert_eq!(ev.evaluate(&parse("!{}").unwrap()).unwrap(), Value::from(true));
+        assert_eq!(ev.evaluate(&parse("!!{\"a\":1}").unwrap()).unwrap(), Value::from(true));
     }
 }
