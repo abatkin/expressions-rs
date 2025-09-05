@@ -7,6 +7,9 @@ false => false
 true || false => true
 true && false => false
 !false => true
+false && false => false
+false || false => false
+true || !true => true
 
 1 + 2 * 3 => 7
 (1 + 2) * 3 => 9
@@ -18,7 +21,7 @@ true && false => false
 
 x => 10
 truth || false => true
-math.add(2, 3) => 5
+add(2, 3) => 5
 
 "1" + "1" => 11
 ("1" + "2" + "3") + "4" => 1234

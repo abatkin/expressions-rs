@@ -1,4 +1,4 @@
-use crate::types::{Atom, BinaryOp, Error, Expr, Result, UnaryOp};
+use crate::types::{BinaryOp, Error, Expr, Primitive, Result, UnaryOp};
 use chumsky::prelude::*;
 
 // Postfix operators: call, index, member
@@ -33,12 +33,12 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
     let string_sq = just('\'')
         .ignore_then(choice((escape, any().filter(|c: &char| *c != '\\' && *c != '\'' && *c != '\n'))).repeated().collect::<String>())
         .then_ignore(just('\''))
-        .map(Atom::Str);
+        .map(Primitive::Str);
 
     let string_dq = just('"')
         .ignore_then(choice((escape, any().filter(|c: &char| *c != '\\' && *c != '"' && *c != '\n'))).repeated().collect::<String>())
         .then_ignore(just('"'))
-        .map(Atom::Str);
+        .map(Primitive::Str);
 
     // Numbers: optional leading '-', digits, optional fractional part
     let digits = text::digits(10);
@@ -47,9 +47,9 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
         .then(digits)
         .then(just('.').then(digits).or_not())
         .to_slice()
-        .map(|s: &str| if s.contains('.') { Atom::Float(s.parse::<f64>().unwrap()) } else { Atom::Int(s.parse::<i64>().unwrap()) });
+        .map(|s: &str| if s.contains('.') { Primitive::Float(s.parse::<f64>().unwrap()) } else { Primitive::Int(s.parse::<i64>().unwrap()) });
 
-    let boolean = choice((text::keyword("true").to(Atom::Bool(true)), text::keyword("false").to(Atom::Bool(false))));
+    let boolean = choice((text::keyword("true").to(Primitive::Bool(true)), text::keyword("false").to(Primitive::Bool(false))));
 
     // Parentheses grouping will be handled via recursive expression parser
     let expr = recursive(|expr| {
@@ -63,7 +63,7 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
 
         // Primary: literals, identifiers as Var, or parenthesized
         let primary = choice((
-            choice((string_sq, string_dq, number, boolean.clone())).map(Expr::Basic),
+            choice((string_sq, string_dq, number, boolean.clone())).map(Expr::Literal),
             ident.map(Expr::Var),
             expr.clone().delimited_by(just('(').padded_by(spacer), just(')').padded_by(spacer)),
         ))
@@ -222,13 +222,13 @@ mod tests {
 
     #[test]
     fn parse_literals() {
-        assert_eq!(parse("123").unwrap(), Expr::Basic(Atom::Int(123)));
-        assert_eq!(parse("-42").unwrap(), Expr::Basic(Atom::Int(-42)));
-        assert_eq!(parse("3.14").unwrap(), Expr::Basic(Atom::Float(3.14)));
-        assert_eq!(parse("true").unwrap(), Expr::Basic(Atom::Bool(true)));
-        assert_eq!(parse("false").unwrap(), Expr::Basic(Atom::Bool(false)));
-        assert_eq!(parse("'hi'").unwrap(), Expr::Basic(Atom::Str("hi".into())));
-        assert_eq!(parse("'hi'\n// comment\n\"ok\"").unwrap(), Expr::Basic(Atom::Str("ok".into())));
+        assert_eq!(parse("123").unwrap(), Expr::Literal(Primitive::Int(123)));
+        assert_eq!(parse("-42").unwrap(), Expr::Literal(Primitive::Int(-42)));
+        assert_eq!(parse("3.14").unwrap(), Expr::Literal(Primitive::Float(3.14)));
+        assert_eq!(parse("true").unwrap(), Expr::Literal(Primitive::Bool(true)));
+        assert_eq!(parse("false").unwrap(), Expr::Literal(Primitive::Bool(false)));
+        assert_eq!(parse("'hi'").unwrap(), Expr::Literal(Primitive::Str("hi".into())));
+        assert_eq!(parse("'hi'\n// comment\n\"ok\"").unwrap(), Expr::Literal(Primitive::Str("ok".into())));
     }
 
     #[test]
@@ -286,7 +286,7 @@ mod tests {
                         match **object {
                             Expr::Index { ref object, ref index } => {
                                 // index == 0
-                                assert_eq!(**index, Expr::Basic(Atom::Int(0)));
+                                assert_eq!(**index, Expr::Literal(Primitive::Int(0)));
                                 // object is Member(..., "c")
                                 match **object {
                                     Expr::Member { ref object, ref field } => {
@@ -295,9 +295,9 @@ mod tests {
                                         match **object {
                                             Expr::Call { ref callee, ref args } => {
                                                 assert_eq!(args.len(), 2);
-                                                assert_eq!(args[0], Expr::Basic(Atom::Int(1)));
+                                                assert_eq!(args[0], Expr::Literal(Primitive::Int(1)));
                                                 // second arg is 2
-                                                assert_eq!(args[1], Expr::Basic(Atom::Int(2)));
+                                                assert_eq!(args[1], Expr::Literal(Primitive::Int(2)));
                                                 // callee: Member(Var("a"),"b")
                                                 let expected_callee = Expr::Member {
                                                     object: Box::new(Expr::Var("a".into())),
@@ -348,7 +348,7 @@ mod tests {
         let ast = parse("foo(1)(2)(3)").unwrap();
         // foo(1)(2)(3) => Call(Call(Call(Var("foo"),1),2),3)
         fn is_int(e: &Expr, v: i64) -> bool {
-            *e == Expr::Basic(Atom::Int(v))
+            *e == Expr::Literal(Primitive::Int(v))
         }
         match ast {
             Expr::Call { callee: c3, args: a3 } => {
@@ -376,7 +376,7 @@ mod tests {
         let ast = parse("arr[1+2][0]").unwrap();
         match ast {
             Expr::Index { object, index } => {
-                assert_eq!(*index, Expr::Basic(Atom::Int(0)));
+                assert_eq!(*index, Expr::Literal(Primitive::Int(0)));
                 match *object {
                     Expr::Index { object, index } => {
                         match *index {
@@ -454,6 +454,6 @@ mod tests {
         assert!(res.is_ok(), "parse_in_braces failed: {:?}", res);
         let (expr, consumed) = res.unwrap();
         assert_eq!(consumed, 4, "consumed should include string and '}}'");
-        assert_eq!(expr, Expr::Basic(Atom::Str("A".into())));
+        assert_eq!(expr, Expr::Literal(Primitive::Str("A".into())));
     }
 }

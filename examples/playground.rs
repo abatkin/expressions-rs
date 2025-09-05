@@ -1,5 +1,5 @@
-use simple_expressions::evaluator::{Evaluator, SimpleConstVar, Variable, VariableResolver};
-use simple_expressions::types::Atom;
+use simple_expressions::evaluator::{Evaluator, VariableResolver};
+use simple_expressions::types::{Primitive, Value};
 use std::collections::HashMap;
 
 struct MapVariableResolver {
@@ -17,14 +17,9 @@ impl MapVariableResolver {
 }
 
 impl VariableResolver for MapVariableResolver {
-    fn resolve(&self, path: &[String]) -> Option<Box<dyn Variable>> {
-        if path.len() != 1 {
-            return None;
-        }
-        let name = &path[0];
+    fn resolve(&self, name: &str) -> Option<Value> {
         let val = self.variables.get(name)?;
-        let var = SimpleConstVar(Atom::Str(val.clone()));
-        Some(Box::new(var))
+        Some(Value::Primitive(Primitive::Str(val.to_string())))
     }
 }
 
