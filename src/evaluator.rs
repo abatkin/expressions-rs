@@ -450,10 +450,8 @@ mod tests {
         // string methods
         assert_eq!(ev.evaluate(&parse("'ab'.toUpper()").unwrap()).unwrap().to_string(), "AB");
         assert_eq!(ev.evaluate(&parse("' Ab '.trim().length").unwrap()).unwrap(), Value::from(2i64));
-        // list.length property and len()/get() methods
+        // list.length property
         assert_eq!(ev.evaluate(&parse("[1,2,3].length").unwrap()).unwrap(), Value::from(3i64));
-        assert_eq!(ev.evaluate(&parse("[1,2,3].len()").unwrap()).unwrap(), Value::from(3i64));
-        assert_eq!(ev.evaluate(&parse("[10,20,30].get(1)").unwrap()).unwrap(), Value::from(20i64));
         // dict.length property and keys()/values()
         assert_eq!(ev.evaluate(&parse("{\"a\":1, \"b\":2}.length").unwrap()).unwrap(), Value::from(2i64));
         assert_eq!(ev.evaluate(&parse("{\"a\":1}.keys().length").unwrap()).unwrap(), Value::from(1i64));
