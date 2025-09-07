@@ -30,6 +30,8 @@ pub enum Error {
     NotIndexable(String),
     #[error("no such key: {0}")]
     NoSuchKey(String),
+    #[error("unknown member '{member}' for type {type_name}")]
+    UnknownMember { type_name: String, member: String },
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -171,6 +173,107 @@ impl Value {
                 format!("{{{}}}", inner)
             }
             Value::Func(_) => "<func>".into(),
+        }
+    }
+
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::Primitive(Primitive::Str(_)) => "string",
+            Value::Primitive(Primitive::Int(_)) | Value::Primitive(Primitive::Float(_)) => "number",
+            Value::Primitive(Primitive::Bool(_)) => "bool",
+            Value::List(_) => "list",
+            Value::Dict(_) => "dict",
+            Value::Func(_) => "func",
+        }
+    }
+
+    pub fn get_member(&self, name: &str) -> Result<Value> {
+        match self {
+            Value::Primitive(Primitive::Str(s)) => match name {
+                "length" => Ok(Value::from(s.len() as i64)),
+                "toUpper" => {
+                    let base = s.clone();
+                    Ok(Value::Func(Rc::new(move |args: &[Value]| {
+                        if !args.is_empty() {
+                            return Err(Error::EvaluationFailed("toUpper expects 0 args".into()));
+                        }
+                        Ok(Value::from(base.to_uppercase()))
+                    })))
+                }
+                "toLower" => {
+                    let base = s.clone();
+                    Ok(Value::Func(Rc::new(move |args: &[Value]| {
+                        if !args.is_empty() {
+                            return Err(Error::EvaluationFailed("toLower expects 0 args".into()));
+                        }
+                        Ok(Value::from(base.to_lowercase()))
+                    })))
+                }
+                "trim" => {
+                    let base = s.clone();
+                    Ok(Value::Func(Rc::new(move |args: &[Value]| {
+                        if !args.is_empty() {
+                            return Err(Error::EvaluationFailed("trim expects 0 args".into()));
+                        }
+                        Ok(Value::from(base.trim().to_string()))
+                    })))
+                }
+                _ => Err(Error::UnknownMember { type_name: self.type_name().into(), member: name.to_string() }),
+            },
+            Value::List(vs) => match name {
+                "length" => Ok(Value::from(vs.len() as i64)),
+                "len" => {
+                    let data = vs.clone();
+                    Ok(Value::Func(Rc::new(move |args: &[Value]| {
+                        if !args.is_empty() {
+                            return Err(Error::EvaluationFailed("len expects 0 args".into()));
+                        }
+                        Ok(Value::from(data.len() as i64))
+                    })))
+                }
+                "get" => {
+                    let data = vs.clone();
+                    Ok(Value::Func(Rc::new(move |args: &[Value]| {
+                        if args.len() != 1 {
+                            return Err(Error::EvaluationFailed("get expects 1 arg".into()));
+                        }
+                        if let Value::Primitive(Primitive::Int(i)) = args[0] {
+                            let len = data.len() as i64;
+                            let eff = if i < 0 { len + i } else { i };
+                            if eff < 0 || eff >= len {
+                                return Err(Error::IndexOutOfBounds { index: i, len: data.len() });
+                            }
+                            Ok(data[eff as usize].clone())
+                        } else {
+                            Err(Error::WrongIndexType { target: "list", message: "expected int index".into() })
+                        }
+                    })))
+                }
+                _ => Err(Error::UnknownMember { type_name: self.type_name().into(), member: name.to_string() }),
+            },
+            Value::Dict(m) => match name {
+                "length" => Ok(Value::from(m.len() as i64)),
+                "keys" => {
+                    let keys: Vec<Value> = m.keys().cloned().map(Value::from).collect();
+                    Ok(Value::Func(Rc::new(move |args: &[Value]| {
+                        if !args.is_empty() {
+                            return Err(Error::EvaluationFailed("keys expects 0 args".into()));
+                        }
+                        Ok(Value::List(keys.clone()))
+                    })))
+                }
+                "values" => {
+                    let vals: Vec<Value> = m.values().cloned().collect();
+                    Ok(Value::Func(Rc::new(move |args: &[Value]| {
+                        if !args.is_empty() {
+                            return Err(Error::EvaluationFailed("values expects 0 args".into()));
+                        }
+                        Ok(Value::List(vals.clone()))
+                    })))
+                }
+                _ => Err(Error::UnknownMember { type_name: self.type_name().into(), member: name.to_string() }),
+            },
+            _ => Err(Error::UnknownMember { type_name: self.type_name().into(), member: name.to_string() }),
         }
     }
 }

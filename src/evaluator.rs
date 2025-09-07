@@ -68,10 +68,7 @@ impl<R: VariableResolver> Evaluator<R> {
             Expr::Call { callee, args } => self.eval_call(callee, args),
             Expr::Member { object, field } => {
                 let obj = self.evaluate(object)?;
-                match obj {
-                    Value::Dict(ref m) => m.get(field).cloned().ok_or_else(|| Error::NoSuchKey(field.clone())),
-                    _ => Err(Error::NotADict),
-                }
+                obj.get_member(field)
             }
             Expr::Index { object, index } => {
                 let obj_v = self.evaluate(object)?;
@@ -445,15 +442,33 @@ mod tests {
             Err(Error::WrongIndexType { target, .. }) => assert_eq!(target, "dict"),
             other => panic!("expected WrongIndexType(dict), got {:?}", other),
         }
-        // Member sugar
-        assert_eq!(ev.evaluate(&parse("{\"a\": 1}.a").unwrap()).unwrap(), Value::from(1i64));
-        match ev.evaluate(&parse("{\"a\": 1}.z").unwrap()) {
-            Err(Error::NoSuchKey(k)) => assert_eq!(k, "z"),
-            other => panic!("expected NoSuchKey, got {:?}", other),
+        // Members: properties and methods
+        // string.length property
+        assert_eq!(ev.evaluate(&parse("'abc'.length").unwrap()).unwrap(), Value::from(3i64));
+        // string methods
+        assert_eq!(ev.evaluate(&parse("'ab'.toUpper()").unwrap()).unwrap().to_string(), "AB");
+        assert_eq!(ev.evaluate(&parse("' Ab '.trim().length").unwrap()).unwrap(), Value::from(2i64));
+        // list.length property and len()/get() methods
+        assert_eq!(ev.evaluate(&parse("[1,2,3].length").unwrap()).unwrap(), Value::from(3i64));
+        assert_eq!(ev.evaluate(&parse("[1,2,3].len()").unwrap()).unwrap(), Value::from(3i64));
+        assert_eq!(ev.evaluate(&parse("[10,20,30].get(1)").unwrap()).unwrap(), Value::from(20i64));
+        // dict.length property and keys()/values()
+        assert_eq!(ev.evaluate(&parse("{\"a\":1, \"b\":2}.length").unwrap()).unwrap(), Value::from(2i64));
+        assert_eq!(ev.evaluate(&parse("{\"a\":1}.keys().length").unwrap()).unwrap(), Value::from(1i64));
+        // errors: dict dot key is unknown member now
+        match ev.evaluate(&parse("{\"a\": 1}.a").unwrap()) {
+            Err(Error::UnknownMember { member, .. }) => assert_eq!(member, "a"),
+            other => panic!("expected UnknownMember, got {:?}", other),
         }
-        match ev.evaluate(&parse("[1].len").unwrap()) {
-            Err(Error::NotADict) => (),
-            other => panic!("expected NotADict, got {:?}", other),
+        // errors: unknown member on list
+        match ev.evaluate(&parse("[1].toUpper").unwrap()) {
+            Err(Error::UnknownMember { member, .. }) => assert_eq!(member, "toUpper"),
+            other => panic!("expected UnknownMember, got {:?}", other),
+        }
+        // calling non-call property is NotCallable
+        match ev.evaluate(&parse("'abc'.length()").unwrap()) {
+            Err(Error::NotCallable) => (),
+            other => panic!("expected NotCallable, got {:?}", other),
         }
         // Nested
         assert_eq!(ev.evaluate(&parse("{\"xs\": [10, 20]}[\"xs\"][1]").unwrap()).unwrap(), Value::from(20i64));
