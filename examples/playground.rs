@@ -1,5 +1,6 @@
 use simple_expressions::evaluator::{Evaluator, VariableResolver};
-use simple_expressions::types::{Primitive, Value};
+use simple_expressions::types::error::Result;
+use simple_expressions::types::value::{Primitive, Value};
 use std::collections::HashMap;
 
 struct MapVariableResolver {
@@ -23,7 +24,7 @@ impl VariableResolver for MapVariableResolver {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let mut resolver = MapVariableResolver::new();
     resolver.set("foo".to_string(), "bar".to_string());
 

@@ -1,4 +1,4 @@
-use crate::types::{Error, Result};
+use crate::types::error::{Error, Result};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
@@ -349,4 +349,22 @@ impl TryFrom<Value> for String {
     fn try_from(v: Value) -> Result<Self> {
         if let Value::Primitive(p) = v { p.try_into() } else { Err(Error::TypeMismatch("expected string".into())) }
     }
+}
+
+pub enum Member {
+    Property(Value),
+    Method(Rc<dyn Fn(&[Value]) -> Result<Value>>),
+}
+
+impl Member {
+    pub fn into_value(self) -> Value {
+        match self {
+            Member::Property(v) => v,
+            Member::Method(f) => Value::Func(f),
+        }
+    }
+}
+
+pub trait Members {
+    fn get_member(&self, name: &str) -> Result<Member>;
 }
