@@ -1,4 +1,5 @@
-use crate::types::{BinaryOp, Error, Expr, Primitive, Result, UnaryOp};
+use crate::types::{BinaryOp, Error, Expr, Result, UnaryOp};
+use crate::value::Primitive;
 use chumsky::prelude::*;
 
 // Postfix operators: call, index, member

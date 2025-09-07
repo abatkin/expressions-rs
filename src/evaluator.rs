@@ -1,5 +1,6 @@
 use crate::parser::parse;
-use crate::types::{BinaryOp, Error, Expr, Primitive, Result, UnaryOp, Value};
+use crate::types::{BinaryOp, Error, Expr, Result, UnaryOp};
+use crate::value::{Primitive, Value};
 
 pub trait VariableResolver {
     fn resolve(&self, name: &str) -> Option<Value>;
