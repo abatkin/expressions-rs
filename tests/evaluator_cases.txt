@@ -37,3 +37,13 @@ add(2, 3) => 5
 
 "abcd".length => 4
 "abcd".toUpper() => ABCD
+"abcd".substring(1) => bcd
+"abcd".substring(0) => abcd
+"abcd".substring(1,2) => b
+
+["a", "b", "c"].join(",") => a,b,c
+["a", "b", "c"].contains("b") => true
+["a", "b", "c"].contains("d") => false
+{"a": 1, "b": 2}.get("c", "blah") => blah
+{"a": 1, "b": 2}.contains("a") => true
+{"a": 1, "b": 2}.contains("c") => false
