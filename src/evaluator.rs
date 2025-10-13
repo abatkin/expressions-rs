@@ -323,7 +323,7 @@ mod tests {
                 return Some(Value::Func(f));
             }
             if key == "global" {
-                return Some(Object(Rc::new(MockGlobal{})));
+                return Some(Object(Rc::new(MockGlobal {})));
             }
             None
         }
@@ -339,7 +339,7 @@ mod tests {
         fn get_member(&self, name: &str) -> Result<Value> {
             match name {
                 "a" => Ok(Value::Primitive(Primitive::Str("a".to_string()))),
-                "fun" => Ok(Value::Func(Rc::new(|_args: &[Value]| -> Result<Value> {Ok(Value::Primitive(Primitive::Str("yes".to_string())))}))),
+                "fun" => Ok(Value::Func(Rc::new(|_args: &[Value]| -> Result<Value> { Ok(Value::Primitive(Primitive::Str("yes".to_string()))) }))),
                 _ => Err(Error::ResolveFailed(name.to_string())),
             }
         }
@@ -358,30 +358,6 @@ mod tests {
             } else {
                 Err(Error::ResolveFailed(key.to_string()))
             }
-        }
-
-        fn to_string(&self) -> Option<String> {
-            todo!()
-        }
-
-        fn to_float(&self) -> Option<f64> {
-            todo!()
-        }
-
-        fn to_int(&self) -> Option<i64> {
-            todo!()
-        }
-
-        fn to_bool(&self) -> Option<bool> {
-            todo!()
-        }
-
-        fn call(&self, _args: &[Value]) -> Result<Value> {
-            todo!()
-        }
-
-        fn equals(&self, _other: &Value) -> bool {
-            todo!()
         }
     }
 

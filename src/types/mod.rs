@@ -1,3 +1,4 @@
+mod custom_object;
 mod dict_members;
 pub mod error;
 pub mod expression;

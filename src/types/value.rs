@@ -1,3 +1,4 @@
+pub(crate) use crate::types::custom_object::CustomObject;
 use crate::types::error::{Error, Result};
 use crate::types::member::Members;
 use std::collections::BTreeMap;
@@ -104,19 +105,6 @@ impl TryFrom<Primitive> for String {
     fn try_from(p: Primitive) -> Result<Self> {
         if let Primitive::Str(s) = p { Ok(s) } else { Err(Error::TypeMismatch("expected string".into())) }
     }
-}
-
-pub trait CustomObject {
-    fn type_name(&self) -> &'static str;
-    fn get_member(&self, name: &str) -> Result<Value>;
-    fn get_index(&self, index: i64) -> Result<Value>;
-    fn get_key_value(&self, key: &str) -> Result<Value>;
-    fn to_string(&self) -> Option<String>;
-    fn to_float(&self) -> Option<f64>;
-    fn to_int(&self) -> Option<i64>;
-    fn to_bool(&self) -> Option<bool>;
-    fn call(&self, args: &[Value]) -> Result<Value>;
-    fn equals(&self, other: &Value) -> bool;
 }
 
 pub type Callable = Rc<dyn Fn(&[Value]) -> Result<Value>>;
