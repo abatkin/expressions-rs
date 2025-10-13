@@ -1,7 +1,8 @@
 use crate::types::error::{Error, Result};
+use crate::types::function;
 use crate::types::object::Object;
 use crate::types::primitive::Primitive;
-use crate::types::value::{Value, method1};
+use crate::types::value::Value;
 use std::any::Any;
 use std::rc::Rc;
 
@@ -29,11 +30,11 @@ impl Object for ListObject {
             "length" => Ok(Value::from(self.list.len() as i64)),
             "contains" => {
                 let base = self.list.clone();
-                Ok(method1(move |arg: &Value| Ok(Value::from(base.iter().any(|v| v == arg)))))
+                Ok(function::method1(move |arg: &Value| Ok(Value::from(base.iter().any(|v| v == arg)))))
             }
             "get" => {
                 let base = self.list.clone();
-                Ok(Value::Func(std::rc::Rc::new(move |args: &[Value]| {
+                Ok(function::new(Rc::new(move |args: &[Value]| {
                     if args.len() != 2 {
                         return Err(Error::EvaluationFailed("expected 2 args".into()));
                     }
@@ -51,7 +52,7 @@ impl Object for ListObject {
             }
             "join" => {
                 let base = self.list.clone();
-                Ok(method1(move |arg: &Value| {
+                Ok(function::method1(move |arg: &Value| {
                     let joiner = if let Value::Primitive(Primitive::Str(s)) = arg {
                         s.clone()
                     } else {

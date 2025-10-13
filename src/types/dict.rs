@@ -1,9 +1,10 @@
 use crate::types::error::{Error, Result};
-use crate::types::list;
 use crate::types::object::Object;
 use crate::types::primitive::Primitive;
-use crate::types::value::{Value, method0, method1};
+use crate::types::value::Value;
+use crate::types::{function, list};
 
+use crate::types::function::method0;
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -30,7 +31,7 @@ impl Object for DictObject {
             "length" => Ok(Value::from(self.map.len() as i64)),
             "keys" => {
                 let keys: Vec<Value> = self.map.keys().cloned().map(Value::from).collect();
-                Ok(method0(move || Ok(list::new(keys.clone()))))
+                Ok(function::method0(move || Ok(list::new(keys.clone()))))
             }
             "values" => {
                 let vals: Vec<Value> = self.map.values().cloned().collect();
@@ -38,7 +39,7 @@ impl Object for DictObject {
             }
             "contains" => {
                 let base = self.map.clone();
-                Ok(method1(move |arg: &Value| {
+                Ok(function::method1(move |arg: &Value| {
                     if let Value::Primitive(Primitive::Str(s)) = arg {
                         Ok(Value::from(base.contains_key(s)))
                     } else {
@@ -48,7 +49,7 @@ impl Object for DictObject {
             }
             "get" => {
                 let base = self.map.clone();
-                Ok(Value::Func(std::rc::Rc::new(move |args: &[Value]| {
+                Ok(function::new(std::rc::Rc::new(move |args: &[Value]| {
                     if args.len() != 2 {
                         return Err(Error::EvaluationFailed("expected 2 args".into()));
                     }

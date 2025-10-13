@@ -92,7 +92,6 @@ impl<R: VariableResolver> Evaluator<R> {
                             Value::Primitive(Primitive::Int(_)) | Value::Primitive(Primitive::Float(_)) => "number",
                             Value::Primitive(Primitive::Str(_)) => "string",
                             Value::Primitive(Primitive::Bool(_)) => "bool",
-                            Value::Func(_) => "func",
                             Value::Object(obj) => obj.type_name(),
                         };
                         Err(Error::NotIndexable(t.into()))
@@ -122,13 +121,6 @@ impl<R: VariableResolver> Evaluator<R> {
     fn eval_call(&self, callee: &Expr, args: &Vec<Expr>) -> Result<Value> {
         let callee_v = self.evaluate(callee)?;
         match callee_v {
-            Value::Func(f) => {
-                let mut vals = Vec::with_capacity(args.len());
-                for a in args {
-                    vals.push(self.evaluate(a)?);
-                }
-                (f)(&vals)
-            }
             Value::Object(obj) => {
                 let mut vals = Vec::with_capacity(args.len());
                 for a in args {
@@ -261,6 +253,7 @@ mod tests {
     use std::rc::Rc;
 
     use crate::parser::parse;
+    use crate::types::function;
     use crate::types::value::Object;
 
     struct MockResolver;
@@ -278,15 +271,15 @@ mod tests {
                 return Some(Value::from(true));
             }
             if key == "math.add" || key == "add" {
-                let f = Rc::new(|args: &[Value]| -> Result<Value> {
+                let f = function::new(Rc::new(|args: &[Value]| -> Result<Value> {
                     if args.len() != 2 {
                         return Err(Error::EvaluationFailed("need 2 args".into()));
                     }
                     let a = args[0].to_float_lossy().ok_or(Error::TypeMismatch("number".into()))?;
                     let b = args[1].to_float_lossy().ok_or(Error::TypeMismatch("number".into()))?;
                     Ok(Value::from(a + b))
-                });
-                return Some(Value::Func(f));
+                }));
+                return Some(f);
             }
             if key == "global" {
                 return Some(Value::Object(Rc::new(MockGlobal {})));
@@ -305,7 +298,7 @@ mod tests {
         fn get_member(&self, name: &str) -> Result<Value> {
             match name {
                 "a" => Ok(Value::Primitive(Primitive::Str("a".to_string()))),
-                "fun" => Ok(Value::Func(Rc::new(|_args: &[Value]| -> Result<Value> { Ok(Value::Primitive(Primitive::Str("yes".to_string()))) }))),
+                "fun" => Ok(function::new(Rc::new(|_args: &[Value]| -> Result<Value> { Ok(Value::Primitive(Primitive::Str("yes".to_string()))) }))),
                 _ => Err(Error::ResolveFailed(name.to_string())),
             }
         }

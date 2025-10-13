@@ -1,6 +1,7 @@
 pub mod dict;
 pub mod error;
 pub mod expression;
+pub mod function;
 pub mod list;
 mod object;
 pub mod primitive;

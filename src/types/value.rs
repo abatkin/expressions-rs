@@ -6,11 +6,9 @@ use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::rc::Rc;
 
-pub type Callable = Rc<dyn Fn(&[Value]) -> Result<Value>>;
 #[derive(Clone)]
 pub enum Value {
     Primitive(Primitive),
-    Func(Callable),
     Object(Rc<dyn Object>),
 }
 
@@ -18,7 +16,6 @@ impl Value {
     pub fn coerce_bool(&self) -> Option<bool> {
         match self {
             Value::Primitive(p) => p.coerce_bool(),
-            Value::Func(_) => None,
             Value::Object(obj) => obj.as_bool(),
         }
     }
@@ -26,13 +23,11 @@ impl Value {
         match self {
             Value::Primitive(p) => p.to_float_lossy(),
             Value::Object(obj) => obj.as_float(),
-            _ => None,
         }
     }
     pub fn as_str_lossy(&self) -> String {
         match self {
             Value::Primitive(p) => p.as_str_lossy(),
-            Value::Func(_) => "<func>".into(),
             Value::Object(obj) => obj.as_string().unwrap_or_else(|| format!("{}", obj)),
         }
     }
@@ -42,7 +37,6 @@ impl Value {
             Value::Primitive(Primitive::Str(_)) => "string",
             Value::Primitive(Primitive::Int(_)) | Value::Primitive(Primitive::Float(_)) => "number",
             Value::Primitive(Primitive::Bool(_)) => "bool",
-            Value::Func(_) => "func",
             Value::Object(obj) => obj.type_name(),
         }
     }
@@ -74,7 +68,6 @@ impl Debug for Value {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Value::Primitive(p) => write!(f, "{}", p),
-            Value::Func(_) => write!(f, "<func>"),
             Value::Object(obj) => write!(f, "{}", obj),
         }
     }
@@ -84,10 +77,8 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::Primitive(p1), Value::Primitive(p2)) => p1 == p2,
-            (Value::Func(_), Value::Func(_)) => false,
             (Value::Object(obj1), other) => obj1.equals(other),
             (other, Value::Object(obj2)) => obj2.equals(other),
-            _ => false,
         }
     }
 }
@@ -146,28 +137,4 @@ impl TryFrom<Value> for String {
     fn try_from(v: Value) -> Result<Self> {
         if let Value::Primitive(p) = v { p.try_into() } else { Err(Error::TypeMismatch("expected string".into())) }
     }
-}
-
-pub fn method0<F>(f: F) -> Value
-where
-    F: Fn() -> Result<Value> + 'static,
-{
-    Value::Func(Rc::new(move |args: &[Value]| {
-        if !args.is_empty() {
-            return Err(Error::EvaluationFailed("expected 0 args".into()));
-        }
-        f()
-    }))
-}
-
-pub fn method1<F>(f: F) -> Value
-where
-    F: Fn(&Value) -> Result<Value> + 'static,
-{
-    Value::Func(Rc::new(move |args: &[Value]| {
-        if args.len() != 1 {
-            return Err(Error::EvaluationFailed("expected 1 arg".into()));
-        }
-        f(&args[0])
-    }))
 }
