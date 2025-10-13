@@ -1,6 +1,6 @@
 use crate::types::error::{Error, Result};
 use crate::types::list;
-use crate::types::object::CustomObject;
+use crate::types::object::Object;
 use crate::types::value::{Primitive, Value, method0, method1};
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -19,7 +19,7 @@ impl DictObject {
     }
 }
 
-impl CustomObject for DictObject {
+impl Object for DictObject {
     fn type_name(&self) -> &'static str {
         "dict"
     }

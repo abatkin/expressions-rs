@@ -3,7 +3,7 @@ use crate::types::value::Value;
 use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
 
-pub trait CustomObject: Any {
+pub trait Object: Any {
     fn type_name(&self) -> &'static str {
         "object"
     }
@@ -45,13 +45,13 @@ pub trait CustomObject: Any {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-impl Display for dyn CustomObject {
+impl Display for dyn Object {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.display())
     }
 }
 
-impl Debug for dyn CustomObject {
+impl Debug for dyn Object {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.debug())
     }

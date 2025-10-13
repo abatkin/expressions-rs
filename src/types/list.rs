@@ -1,5 +1,5 @@
 use crate::types::error::{Error, Result};
-use crate::types::object::CustomObject;
+use crate::types::object::Object;
 use crate::types::value::{Primitive, Value, method1};
 use std::any::Any;
 use std::rc::Rc;
@@ -18,7 +18,7 @@ impl ListObject {
     }
 }
 
-impl CustomObject for ListObject {
+impl Object for ListObject {
     fn type_name(&self) -> &'static str {
         "list"
     }

@@ -1,5 +1,5 @@
 use crate::types::error::{Error, Result};
-pub(crate) use crate::types::object::CustomObject;
+pub(crate) use crate::types::object::Object;
 use crate::types::string_members::get_string_member;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
@@ -110,7 +110,7 @@ pub type Callable = Rc<dyn Fn(&[Value]) -> Result<Value>>;
 pub enum Value {
     Primitive(Primitive),
     Func(Callable),
-    Object(Rc<dyn CustomObject>),
+    Object(Rc<dyn Object>),
 }
 
 impl Value {

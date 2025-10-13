@@ -260,8 +260,7 @@ mod tests {
     use std::rc::Rc;
 
     use crate::parser::parse;
-    use crate::types::value::CustomObject;
-    use crate::types::value::Value::Object;
+    use crate::types::value::Object;
 
     struct MockResolver;
     impl MockResolver {
@@ -289,7 +288,7 @@ mod tests {
                 return Some(Value::Func(f));
             }
             if key == "global" {
-                return Some(Object(Rc::new(MockGlobal {})));
+                return Some(Value::Object(Rc::new(MockGlobal {})));
             }
             None
         }
@@ -297,7 +296,7 @@ mod tests {
 
     struct MockGlobal;
 
-    impl CustomObject for MockGlobal {
+    impl Object for MockGlobal {
         fn type_name(&self) -> &'static str {
             "global"
         }
