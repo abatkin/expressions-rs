@@ -2,6 +2,6 @@ mod custom_object;
 mod dict_members;
 pub mod error;
 pub mod expression;
-mod list_members;
+pub mod list;
 mod string_members;
 pub mod value;

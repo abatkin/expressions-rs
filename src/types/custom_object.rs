@@ -1,7 +1,9 @@
 use crate::types::error::Result;
 use crate::types::value::Value;
+use std::any::Any;
+use std::fmt::{Debug, Display, Formatter};
 
-pub trait CustomObject {
+pub trait CustomObject: Any {
     fn type_name(&self) -> &'static str {
         "object"
     }
@@ -14,16 +16,16 @@ pub trait CustomObject {
     fn get_key_value(&self, key: &str) -> Result<Value> {
         Err(crate::types::error::Error::NotIndexable(key.into()))
     }
-    fn to_string(&self) -> Option<String> {
+    fn as_string(&self) -> Option<String> {
         None
     }
-    fn to_float(&self) -> Option<f64> {
+    fn as_float(&self) -> Option<f64> {
         None
     }
-    fn to_int(&self) -> Option<i64> {
+    fn as_int(&self) -> Option<i64> {
         None
     }
-    fn to_bool(&self) -> Option<bool> {
+    fn as_bool(&self) -> Option<bool> {
         None
     }
     fn call(&self, _args: &[Value]) -> Result<Value> {
@@ -31,5 +33,26 @@ pub trait CustomObject {
     }
     fn equals(&self, _other: &Value) -> bool {
         false
+    }
+    fn display(&self) -> String {
+        self.as_string().unwrap_or_else(|| self.type_name().into())
+    }
+    fn debug(&self) -> String {
+        format!("<{}>", self.type_name())
+    }
+
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl Display for dyn CustomObject {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display())
+    }
+}
+
+impl Debug for dyn CustomObject {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.debug())
     }
 }

@@ -1,7 +1,6 @@
 pub(crate) use crate::types::custom_object::CustomObject;
 use crate::types::dict_members::get_dict_member;
 use crate::types::error::{Error, Result};
-use crate::types::list_members::get_list_member;
 use crate::types::string_members::get_string_member;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -112,7 +111,6 @@ pub type Callable = Rc<dyn Fn(&[Value]) -> Result<Value>>;
 #[derive(Clone)]
 pub enum Value {
     Primitive(Primitive),
-    List(Vec<Value>),
     Dict(BTreeMap<String, Value>),
     Func(Callable),
     Object(Rc<dyn CustomObject>),
@@ -122,32 +120,27 @@ impl Value {
     pub fn coerce_bool(&self) -> Option<bool> {
         match self {
             Value::Primitive(p) => p.coerce_bool(),
-            Value::List(vs) => Some(!vs.is_empty()),
             Value::Dict(m) => Some(!m.is_empty()),
             Value::Func(_) => None,
-            Value::Object(obj) => obj.to_bool(),
+            Value::Object(obj) => obj.as_bool(),
         }
     }
     pub fn to_float_lossy(&self) -> Option<f64> {
         match self {
             Value::Primitive(p) => p.to_float_lossy(),
-            Value::Object(obj) => obj.to_float(),
+            Value::Object(obj) => obj.as_float(),
             _ => None,
         }
     }
     pub fn as_str_lossy(&self) -> String {
         match self {
             Value::Primitive(p) => p.as_str_lossy(),
-            Value::List(vs) => {
-                let inner = vs.iter().map(|v| v.as_str_lossy()).collect::<Vec<_>>().join(", ");
-                format!("[{}]", inner)
-            }
             Value::Dict(m) => {
                 let inner = m.iter().map(|(k, v)| format!("{}: {}", k, v.as_str_lossy())).collect::<Vec<_>>().join(", ");
                 format!("{{{}}}", inner)
             }
             Value::Func(_) => "<func>".into(),
-            Value::Object(obj) => obj.to_string().unwrap_or_else(|| format!("<{}>", obj.type_name())),
+            Value::Object(obj) => obj.as_string().unwrap_or_else(|| format!("{}", obj)),
         }
     }
 
@@ -156,7 +149,6 @@ impl Value {
             Value::Primitive(Primitive::Str(_)) => "string",
             Value::Primitive(Primitive::Int(_)) | Value::Primitive(Primitive::Float(_)) => "number",
             Value::Primitive(Primitive::Bool(_)) => "bool",
-            Value::List(_) => "list",
             Value::Dict(_) => "dict",
             Value::Func(_) => "func",
             Value::Object(obj) => obj.type_name(),
@@ -166,7 +158,6 @@ impl Value {
     pub fn get_member(&self, name: &str) -> Result<Value> {
         match self {
             Value::Primitive(Primitive::Str(s)) => get_string_member(s, name),
-            Value::List(vs) => get_list_member(vs, name),
             Value::Dict(m) => get_dict_member(m, name),
             Value::Object(obj) => obj.get_member(name),
             _ => Err(Error::UnknownMember {
@@ -192,10 +183,9 @@ impl Debug for Value {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Value::Primitive(p) => write!(f, "{}", p),
-            Value::List(vs) => write!(f, "[{}]", vs.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")),
             Value::Dict(m) => write!(f, "{{{}}}", m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect::<Vec<_>>().join(", ")),
             Value::Func(_) => write!(f, "<func>"),
-            Value::Object(obj) => write!(f, "<Object {}: {}>", obj.type_name(), obj.to_string().unwrap_or("?".to_string())),
+            Value::Object(obj) => write!(f, "{}", obj),
         }
     }
 }
@@ -204,7 +194,6 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::Primitive(p1), Value::Primitive(p2)) => p1 == p2,
-            (Value::List(l1), Value::List(l2)) => l1 == l2,
             (Value::Dict(d1), Value::Dict(d2)) => d1 == d2,
             (Value::Func(_), Value::Func(_)) => false,
             (Value::Object(obj1), other) => obj1.equals(other),

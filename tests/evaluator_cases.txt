@@ -17,12 +17,33 @@ true || !true => true
 10 % 3 => 1
 2 ^ 3 => 8
 
-[true][0] => true
-[1, 2, 3][1] => 2
-[1, 2, 3][0+1] => 2
 {"a": 1, "b": 2}["a"] => 1
 {"a": 1, "b": 2}["a"] => 1
 {"ab": 1, "cd": 2}["a" + "b"] => 1
+
+# Lists #
+[true][0] => true
+[1, 2, 3][1] => 2
+[1, 2, 3][0+1] => 2
+
+[1, 2, 3] == [1, 2, 3] => true
+[1, 2, 3] == [1, 2, 4] => false
+[1, 2, 3] != [1, 2, 4] => true
+[1, 2, 3] != [1, 2, 3] => false
+
+[] && true => false
+[1, 2, 3] && true => true
+
+[].length => 0
+[1, 2, 3].length => 3
+
+["a", "b", "c"].contains("b") => true
+["a", "b", "c"].contains("d") => false
+
+[1, 2, 3].get(0, 7) => 1
+[1, 2, 3].get(5, 7) => 7
+
+["a", "b", "c"].join(",") => a,b,c
 
 'x' + 'y' => xy
 
@@ -41,9 +62,6 @@ add(2, 3) => 5
 "abcd".substring(0) => abcd
 "abcd".substring(1,2) => b
 
-["a", "b", "c"].join(",") => a,b,c
-["a", "b", "c"].contains("b") => true
-["a", "b", "c"].contains("d") => false
 {"a": 1, "b": 2}.get("c", "blah") => blah
 {"a": 1, "b": 2}.contains("a") => true
 {"a": 1, "b": 2}.contains("c") => false

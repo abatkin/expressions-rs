@@ -1,6 +1,7 @@
 use crate::parser::parse;
 use crate::types::error::{Error, Result};
 use crate::types::expression::{BinaryOp, Expr, UnaryOp};
+use crate::types::list;
 use crate::types::value::{Primitive, Value};
 
 pub trait VariableResolver {
@@ -49,7 +50,7 @@ impl<R: VariableResolver> Evaluator<R> {
                 for e in items {
                     vals.push(self.evaluate(e)?);
                 }
-                Ok(Value::List(vals))
+                Ok(list::new(vals))
             }
             Expr::DictLiteral(pairs) => {
                 let mut map = std::collections::BTreeMap::new();
@@ -75,22 +76,6 @@ impl<R: VariableResolver> Evaluator<R> {
             Expr::Index { object, index } => {
                 let obj_v = self.evaluate(object)?;
                 match obj_v {
-                    Value::List(vs) => {
-                        let idx_v = self.evaluate(index)?;
-                        if let Value::Primitive(Primitive::Int(i)) = idx_v {
-                            let len = vs.len() as i64;
-                            let eff = if i < 0 { len + i } else { i };
-                            if eff < 0 || eff >= len {
-                                return Err(Error::IndexOutOfBounds { index: i, len: vs.len() });
-                            }
-                            Ok(vs[eff as usize].clone())
-                        } else {
-                            Err(Error::WrongIndexType {
-                                target: "list",
-                                message: "expected int index".into(),
-                            })
-                        }
-                    }
                     Value::Dict(m) => {
                         let idx_v = self.evaluate(index)?;
                         if let Value::Primitive(Primitive::Str(s)) = idx_v {
@@ -121,9 +106,8 @@ impl<R: VariableResolver> Evaluator<R> {
                             Value::Primitive(Primitive::Str(_)) => "string",
                             Value::Primitive(Primitive::Bool(_)) => "bool",
                             Value::Func(_) => "func",
-                            Value::List(_) => "list",
                             Value::Dict(_) => "dict",
-                            Value::Object(_) => "object",
+                            Value::Object(obj) => obj.type_name(),
                         };
                         Err(Error::NotIndexable(t.into()))
                     }
@@ -158,7 +142,7 @@ impl<R: VariableResolver> Evaluator<R> {
                     vals.push(self.evaluate(a)?);
                 }
                 (f)(&vals)
-            },
+            }
             Value::Object(obj) => {
                 let mut vals = Vec::with_capacity(args.len());
                 for a in args {
@@ -191,14 +175,15 @@ impl<R: VariableResolver> Evaluator<R> {
                 let rb = self.evaluate(right)?.coerce_bool().ok_or(Error::TypeMismatch("'&&' expects bools".into()))?;
                 Ok(Value::Primitive(Primitive::Bool(lb && rb)))
             }
-            Eq | Ne => {
+            Eq => {
                 let l = self.evaluate(left)?;
                 let r = self.evaluate(right)?;
-                let eq = match (&l, &r) {
-                    (Value::Primitive(lp), Value::Primitive(rp)) => self.prim_eq(lp, rp)?,
-                    _ => return Err(Error::TypeMismatch("'==' expects comparable primitives".into())),
-                };
-                Ok(Value::Primitive(Primitive::Bool(if let Eq = op { eq } else { !eq })))
+                Ok(Value::Primitive(Primitive::Bool(l == r)))
+            }
+            Ne => {
+                let l = self.evaluate(left)?;
+                let r = self.evaluate(right)?;
+                Ok(Value::Primitive(Primitive::Bool(l != r)))
             }
             Lt | Le | Gt | Ge => {
                 let l = self.evaluate(left)?;
@@ -281,23 +266,12 @@ impl<R: VariableResolver> Evaluator<R> {
             }
         }
     }
-
-    fn prim_eq(&self, a: &Primitive, b: &Primitive) -> Result<bool> {
-        Ok(match (a, b) {
-            (Primitive::Int(x), Primitive::Int(y)) => x == y,
-            (Primitive::Float(x), Primitive::Float(y)) => x == y,
-            (Primitive::Int(x), Primitive::Float(y)) => (*x as f64) == *y,
-            (Primitive::Float(x), Primitive::Int(y)) => *x == (*y as f64),
-            (Primitive::Bool(x), Primitive::Bool(y)) => x == y,
-            (Primitive::Str(x), Primitive::Str(y)) => x == y,
-            _ => return Err(Error::TypeMismatch("'==' expects comparable types".into())),
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::Any;
     use std::rc::Rc;
 
     use crate::parser::parse;
@@ -365,6 +339,14 @@ mod tests {
             } else {
                 Err(Error::ResolveFailed(key.to_string()))
             }
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
         }
     }
 
@@ -474,8 +456,8 @@ mod tests {
         }
         // [10]["0"] => WrongIndexType
         match ev.evaluate(&parse("[10][\"0\"]").unwrap()) {
-            Err(Error::WrongIndexType { target, .. }) => assert_eq!(target, "list"),
-            other => panic!("expected WrongIndexType(list), got {:?}", other),
+            Err(Error::NotIndexable(idx)) => assert_eq!(idx, "0"),
+            other => panic!("expected NotIndexable(0), got {:?}", other),
         }
         // negative indices
         assert_eq!(ev.evaluate(&parse("[10, 20, 30][-1]").unwrap()).unwrap(), Value::from(30i64));

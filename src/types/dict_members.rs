@@ -1,4 +1,5 @@
 use crate::types::error::{Error, Result};
+use crate::types::list;
 use crate::types::value::{Primitive, Value, method0, method1};
 use std::collections::BTreeMap;
 
@@ -7,11 +8,11 @@ pub fn get_dict_member(map: &BTreeMap<String, Value>, name: &str) -> Result<Valu
         "length" => Ok(Value::from(map.len() as i64)),
         "keys" => {
             let keys: Vec<Value> = map.keys().cloned().map(Value::from).collect();
-            Ok(method0(move || Ok(Value::List(keys.clone()))))
+            Ok(method0(move || Ok(list::new(keys.clone()))))
         }
         "values" => {
             let vals: Vec<Value> = map.values().cloned().collect();
-            Ok(method0(move || Ok(Value::List(vals.clone()))))
+            Ok(method0(move || Ok(list::new(vals.clone()))))
         }
         "contains" => {
             let base = map.clone();
