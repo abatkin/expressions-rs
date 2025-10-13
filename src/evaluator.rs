@@ -158,6 +158,13 @@ impl<R: VariableResolver> Evaluator<R> {
                     vals.push(self.evaluate(a)?);
                 }
                 (f)(&vals)
+            },
+            Value::Object(obj) => {
+                let mut vals = Vec::with_capacity(args.len());
+                for a in args {
+                    vals.push(self.evaluate(a)?);
+                }
+                obj.call(&vals)
             }
             _ => Err(Error::NotCallable),
         }
