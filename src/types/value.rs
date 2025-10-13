@@ -1,6 +1,8 @@
 pub(crate) use crate::types::custom_object::CustomObject;
+use crate::types::dict_members::get_dict_member;
 use crate::types::error::{Error, Result};
-use crate::types::member::Members;
+use crate::types::list_members::get_list_member;
+use crate::types::string_members::get_string_member;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
@@ -15,7 +17,6 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    // Back-compat helpers matching the prior Atom API
     pub fn as_bool(&self) -> Option<bool> {
         self.coerce_bool()
     }
@@ -164,9 +165,9 @@ impl Value {
 
     pub fn get_member(&self, name: &str) -> Result<Value> {
         match self {
-            Value::Primitive(Primitive::Str(s)) => s.get_member(name).map(|m| m.into_value()),
-            Value::List(vs) => vs.get_member(name).map(|m| m.into_value()),
-            Value::Dict(m) => m.get_member(name).map(|m| m.into_value()),
+            Value::Primitive(Primitive::Str(s)) => get_string_member(s, name),
+            Value::List(vs) => get_list_member(vs, name),
+            Value::Dict(m) => get_dict_member(m, name),
             Value::Object(obj) => obj.get_member(name),
             _ => Err(Error::UnknownMember {
                 type_name: self.type_name().into(),
@@ -267,4 +268,28 @@ impl TryFrom<Value> for String {
     fn try_from(v: Value) -> Result<Self> {
         if let Value::Primitive(p) = v { p.try_into() } else { Err(Error::TypeMismatch("expected string".into())) }
     }
+}
+
+pub fn method0<F>(f: F) -> Value
+where
+    F: Fn() -> Result<Value> + 'static,
+{
+    Value::Func(Rc::new(move |args: &[Value]| {
+        if !args.is_empty() {
+            return Err(Error::EvaluationFailed("expected 0 args".into()));
+        }
+        f()
+    }))
+}
+
+pub fn method1<F>(f: F) -> Value
+where
+    F: Fn(&Value) -> Result<Value> + 'static,
+{
+    Value::Func(Rc::new(move |args: &[Value]| {
+        if args.len() != 1 {
+            return Err(Error::EvaluationFailed("expected 1 arg".into()));
+        }
+        f(&args[0])
+    }))
 }
