@@ -1,8 +1,8 @@
 use crate::parser::parse;
 use crate::types::error::{Error, Result};
 use crate::types::expression::{BinaryOp, Expr, UnaryOp};
-use crate::types::list;
 use crate::types::value::{Primitive, Value};
+use crate::types::{dict, list};
 
 pub trait VariableResolver {
     fn resolve(&self, name: &str) -> Option<Value>;
@@ -66,7 +66,7 @@ impl<R: VariableResolver> Evaluator<R> {
                     // duplicates allowed: last wins
                     map.insert(key_s, v);
                 }
-                Ok(Value::Dict(map))
+                Ok(dict::new(map))
             }
             Expr::Call { callee, args } => self.eval_call(callee, args),
             Expr::Member { object, field } => {
@@ -76,17 +76,6 @@ impl<R: VariableResolver> Evaluator<R> {
             Expr::Index { object, index } => {
                 let obj_v = self.evaluate(object)?;
                 match obj_v {
-                    Value::Dict(m) => {
-                        let idx_v = self.evaluate(index)?;
-                        if let Value::Primitive(Primitive::Str(s)) = idx_v {
-                            m.get(&s).cloned().ok_or(Error::NoSuchKey(s))
-                        } else {
-                            Err(Error::WrongIndexType {
-                                target: "dict",
-                                message: "expected string key".into(),
-                            })
-                        }
-                    }
                     Value::Object(obj) => {
                         let idx_v = self.evaluate(index)?;
                         if let Value::Primitive(Primitive::Int(i)) = idx_v {
@@ -94,10 +83,7 @@ impl<R: VariableResolver> Evaluator<R> {
                         } else if let Value::Primitive(Primitive::Str(s)) = idx_v {
                             obj.get_key_value(&s)
                         } else {
-                            Err(Error::WrongIndexType {
-                                target: "object",
-                                message: "expected int or string index".into(),
-                            })
+                            Err(Error::NotIndexable(idx_v.as_str_lossy()))
                         }
                     }
                     other => {
@@ -106,7 +92,6 @@ impl<R: VariableResolver> Evaluator<R> {
                             Value::Primitive(Primitive::Str(_)) => "string",
                             Value::Primitive(Primitive::Bool(_)) => "bool",
                             Value::Func(_) => "func",
-                            Value::Dict(_) => "dict",
                             Value::Object(obj) => obj.type_name(),
                         };
                         Err(Error::NotIndexable(t.into()))
@@ -481,8 +466,8 @@ mod tests {
             other => panic!("expected NoSuchKey, got {:?}", other),
         }
         match ev.evaluate(&parse("{\"a\": 1}[0]").unwrap()) {
-            Err(Error::WrongIndexType { target, .. }) => assert_eq!(target, "dict"),
-            other => panic!("expected WrongIndexType(dict), got {:?}", other),
+            Err(Error::NotIndexable(idx)) => assert_eq!(idx, "0"),
+            other => panic!("expected NotIndexable(0), got {:?}", other),
         }
         // Members: properties and methods
         // string.length property

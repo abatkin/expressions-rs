@@ -1,8 +1,6 @@
-use crate::types::dict_members::get_dict_member;
 use crate::types::error::{Error, Result};
 pub(crate) use crate::types::object::CustomObject;
 use crate::types::string_members::get_string_member;
-use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::rc::Rc;
@@ -111,7 +109,6 @@ pub type Callable = Rc<dyn Fn(&[Value]) -> Result<Value>>;
 #[derive(Clone)]
 pub enum Value {
     Primitive(Primitive),
-    Dict(BTreeMap<String, Value>),
     Func(Callable),
     Object(Rc<dyn CustomObject>),
 }
@@ -120,7 +117,6 @@ impl Value {
     pub fn coerce_bool(&self) -> Option<bool> {
         match self {
             Value::Primitive(p) => p.coerce_bool(),
-            Value::Dict(m) => Some(!m.is_empty()),
             Value::Func(_) => None,
             Value::Object(obj) => obj.as_bool(),
         }
@@ -135,10 +131,6 @@ impl Value {
     pub fn as_str_lossy(&self) -> String {
         match self {
             Value::Primitive(p) => p.as_str_lossy(),
-            Value::Dict(m) => {
-                let inner = m.iter().map(|(k, v)| format!("{}: {}", k, v.as_str_lossy())).collect::<Vec<_>>().join(", ");
-                format!("{{{}}}", inner)
-            }
             Value::Func(_) => "<func>".into(),
             Value::Object(obj) => obj.as_string().unwrap_or_else(|| format!("{}", obj)),
         }
@@ -149,7 +141,6 @@ impl Value {
             Value::Primitive(Primitive::Str(_)) => "string",
             Value::Primitive(Primitive::Int(_)) | Value::Primitive(Primitive::Float(_)) => "number",
             Value::Primitive(Primitive::Bool(_)) => "bool",
-            Value::Dict(_) => "dict",
             Value::Func(_) => "func",
             Value::Object(obj) => obj.type_name(),
         }
@@ -158,7 +149,6 @@ impl Value {
     pub fn get_member(&self, name: &str) -> Result<Value> {
         match self {
             Value::Primitive(Primitive::Str(s)) => get_string_member(s, name),
-            Value::Dict(m) => get_dict_member(m, name),
             Value::Object(obj) => obj.get_member(name),
             _ => Err(Error::UnknownMember {
                 type_name: self.type_name().into(),
@@ -183,7 +173,6 @@ impl Debug for Value {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Value::Primitive(p) => write!(f, "{}", p),
-            Value::Dict(m) => write!(f, "{{{}}}", m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect::<Vec<_>>().join(", ")),
             Value::Func(_) => write!(f, "<func>"),
             Value::Object(obj) => write!(f, "{}", obj),
         }
@@ -194,7 +183,6 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::Primitive(p1), Value::Primitive(p2)) => p1 == p2,
-            (Value::Dict(d1), Value::Dict(d2)) => d1 == d2,
             (Value::Func(_), Value::Func(_)) => false,
             (Value::Object(obj1), other) => obj1.equals(other),
             (other, Value::Object(obj2)) => obj2.equals(other),

@@ -2,9 +2,10 @@ use crate::types::error::{Error, Result};
 use crate::types::object::CustomObject;
 use crate::types::value::{Primitive, Value, method1};
 use std::any::Any;
+use std::rc::Rc;
 
 pub fn new(items: Vec<Value>) -> Value {
-    Value::Object(std::rc::Rc::new(ListObject::new(items)))
+    Value::Object(Rc::new(ListObject::new(items)))
 }
 
 pub struct ListObject {

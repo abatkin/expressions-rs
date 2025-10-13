@@ -1,4 +1,4 @@
-mod dict_members;
+pub mod dict;
 pub mod error;
 pub mod expression;
 pub mod list;
