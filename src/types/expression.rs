@@ -1,4 +1,4 @@
-use crate::types::value::Primitive;
+use crate::types::primitive::Primitive;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {

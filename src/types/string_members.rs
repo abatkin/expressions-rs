@@ -1,5 +1,6 @@
 use crate::types::error::{Error, Result};
-use crate::types::value::{Primitive, Value, method0, method1};
+use crate::types::primitive::Primitive;
+use crate::types::value::{Value, method0, method1};
 
 pub fn get_string_member(value: &str, name: &str) -> Result<Value> {
     match name {

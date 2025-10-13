@@ -1,6 +1,7 @@
 use crate::types::error::{Error, Result};
 use crate::types::object::Object;
-use crate::types::value::{Primitive, Value, method1};
+use crate::types::primitive::Primitive;
+use crate::types::value::{Value, method1};
 use std::any::Any;
 use std::rc::Rc;
 

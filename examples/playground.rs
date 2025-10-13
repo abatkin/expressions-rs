@@ -1,6 +1,8 @@
 use simple_expressions::evaluator::{Evaluator, VariableResolver};
 use simple_expressions::types::error::Result;
-use simple_expressions::types::value::{Primitive, Value};
+use simple_expressions::types::primitive::Primitive;
+use simple_expressions::types::value::Value;
+
 use std::collections::HashMap;
 
 struct MapVariableResolver {

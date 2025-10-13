@@ -3,5 +3,6 @@ pub mod error;
 pub mod expression;
 pub mod list;
 mod object;
+pub mod primitive;
 mod string_members;
 pub mod value;

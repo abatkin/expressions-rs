@@ -1,7 +1,8 @@
 use crate::parser::parse;
 use crate::types::error::{Error, Result};
 use crate::types::expression::{BinaryOp, Expr, UnaryOp};
-use crate::types::value::{Primitive, Value};
+use crate::types::primitive::Primitive;
+use crate::types::value::Value;
 use crate::types::{dict, list};
 
 pub trait VariableResolver {

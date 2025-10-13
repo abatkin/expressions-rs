@@ -1,6 +1,6 @@
 use crate::types::error::{Error, Result};
 use crate::types::expression::{BinaryOp, Expr, UnaryOp};
-use crate::types::value::Primitive;
+use crate::types::primitive::Primitive;
 use chumsky::prelude::*;
 
 // Postfix operators: call, index, member
