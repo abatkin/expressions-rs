@@ -102,6 +102,19 @@ impl<R: VariableResolver> Evaluator<R> {
                             })
                         }
                     }
+                    Value::Object(obj) => {
+                        let idx_v = self.evaluate(index)?;
+                        if let Value::Primitive(Primitive::Int(i)) = idx_v {
+                            obj.get_index(i)
+                        } else if let Value::Primitive(Primitive::Str(s)) = idx_v {
+                            obj.get_key_value(&s)
+                        } else {
+                            Err(Error::WrongIndexType {
+                                target: "object",
+                                message: "expected int or string index".into(),
+                            })
+                        }
+                    }
                     other => {
                         let t = match other {
                             Value::Primitive(Primitive::Int(_)) | Value::Primitive(Primitive::Float(_)) => "number",
@@ -110,6 +123,7 @@ impl<R: VariableResolver> Evaluator<R> {
                             Value::Func(_) => "func",
                             Value::List(_) => "list",
                             Value::Dict(_) => "dict",
+                            Value::Object(_) => "object",
                         };
                         Err(Error::NotIndexable(t.into()))
                     }
@@ -280,6 +294,8 @@ mod tests {
     use std::rc::Rc;
 
     use crate::parser::parse;
+    use crate::types::value::CustomObject;
+    use crate::types::value::Value::Object;
 
     struct MockResolver;
     impl MockResolver {
@@ -306,7 +322,66 @@ mod tests {
                 });
                 return Some(Value::Func(f));
             }
+            if key == "global" {
+                return Some(Object(Rc::new(MockGlobal{})));
+            }
             None
+        }
+    }
+
+    struct MockGlobal;
+
+    impl CustomObject for MockGlobal {
+        fn type_name(&self) -> &'static str {
+            "global"
+        }
+
+        fn get_member(&self, name: &str) -> Result<Value> {
+            match name {
+                "a" => Ok(Value::Primitive(Primitive::Str("a".to_string()))),
+                "fun" => Ok(Value::Func(Rc::new(|_args: &[Value]| -> Result<Value> {Ok(Value::Primitive(Primitive::Str("yes".to_string())))}))),
+                _ => Err(Error::ResolveFailed(name.to_string())),
+            }
+        }
+
+        fn get_index(&self, index: i64) -> Result<Value> {
+            if index == 0 {
+                Ok(Value::Primitive(Primitive::Str("zero".to_string())))
+            } else {
+                Err(Error::IndexOutOfBounds { index, len: 1 })
+            }
+        }
+
+        fn get_key_value(&self, key: &str) -> Result<Value> {
+            if key == "k" {
+                Ok(Value::Primitive(Primitive::Str("v".to_string())))
+            } else {
+                Err(Error::ResolveFailed(key.to_string()))
+            }
+        }
+
+        fn to_string(&self) -> Option<String> {
+            todo!()
+        }
+
+        fn to_float(&self) -> Option<f64> {
+            todo!()
+        }
+
+        fn to_int(&self) -> Option<i64> {
+            todo!()
+        }
+
+        fn to_bool(&self) -> Option<bool> {
+            todo!()
+        }
+
+        fn call(&self, _args: &[Value]) -> Result<Value> {
+            todo!()
+        }
+
+        fn equals(&self, _other: &Value) -> bool {
+            todo!()
         }
     }
 

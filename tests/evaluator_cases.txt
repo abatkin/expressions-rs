@@ -47,3 +47,8 @@ add(2, 3) => 5
 {"a": 1, "b": 2}.get("c", "blah") => blah
 {"a": 1, "b": 2}.contains("a") => true
 {"a": 1, "b": 2}.contains("c") => false
+
+global.a => a
+global.fun() => yes
+global[0] => zero
+global["k"] => v

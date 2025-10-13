@@ -106,6 +106,19 @@ impl TryFrom<Primitive> for String {
     }
 }
 
+pub trait CustomObject {
+    fn type_name(&self) -> &'static str;
+    fn get_member(&self, name: &str) -> Result<Value>;
+    fn get_index(&self, index: i64) -> Result<Value>;
+    fn get_key_value(&self, key: &str) -> Result<Value>;
+    fn to_string(&self) -> Option<String>;
+    fn to_float(&self) -> Option<f64>;
+    fn to_int(&self) -> Option<i64>;
+    fn to_bool(&self) -> Option<bool>;
+    fn call(&self, args: &[Value]) -> Result<Value>;
+    fn equals(&self, other: &Value) -> bool;
+}
+
 pub type Callable = Rc<dyn Fn(&[Value]) -> Result<Value>>;
 #[derive(Clone)]
 pub enum Value {
@@ -113,6 +126,7 @@ pub enum Value {
     List(Vec<Value>),
     Dict(BTreeMap<String, Value>),
     Func(Callable),
+    Object(Rc<dyn CustomObject>),
 }
 
 impl Value {
@@ -122,11 +136,13 @@ impl Value {
             Value::List(vs) => Some(!vs.is_empty()),
             Value::Dict(m) => Some(!m.is_empty()),
             Value::Func(_) => None,
+            Value::Object(obj) => obj.to_bool(),
         }
     }
     pub fn to_float_lossy(&self) -> Option<f64> {
         match self {
             Value::Primitive(p) => p.to_float_lossy(),
+            Value::Object(obj) => obj.to_float(),
             _ => None,
         }
     }
@@ -142,6 +158,7 @@ impl Value {
                 format!("{{{}}}", inner)
             }
             Value::Func(_) => "<func>".into(),
+            Value::Object(obj) => obj.to_string().unwrap_or_else(|| format!("<{}>", obj.type_name())),
         }
     }
 
@@ -153,6 +170,7 @@ impl Value {
             Value::List(_) => "list",
             Value::Dict(_) => "dict",
             Value::Func(_) => "func",
+            Value::Object(obj) => obj.type_name(),
         }
     }
 
@@ -161,6 +179,7 @@ impl Value {
             Value::Primitive(Primitive::Str(s)) => s.get_member(name).map(|m| m.into_value()),
             Value::List(vs) => vs.get_member(name).map(|m| m.into_value()),
             Value::Dict(m) => m.get_member(name).map(|m| m.into_value()),
+            Value::Object(obj) => obj.get_member(name),
             _ => Err(Error::UnknownMember {
                 type_name: self.type_name().into(),
                 member: name.to_string(),
@@ -187,6 +206,7 @@ impl Debug for Value {
             Value::List(vs) => write!(f, "[{}]", vs.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")),
             Value::Dict(m) => write!(f, "{{{}}}", m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect::<Vec<_>>().join(", ")),
             Value::Func(_) => write!(f, "<func>"),
+            Value::Object(obj) => write!(f, "<Object {}: {}>", obj.type_name(), obj.to_string().unwrap_or("?".to_string())),
         }
     }
 }
@@ -198,6 +218,8 @@ impl PartialEq for Value {
             (Value::List(l1), Value::List(l2)) => l1 == l2,
             (Value::Dict(d1), Value::Dict(d2)) => d1 == d2,
             (Value::Func(_), Value::Func(_)) => false,
+            (Value::Object(obj1), other) => obj1.equals(other),
+            (other, Value::Object(obj2)) => obj2.equals(other),
             _ => false,
         }
     }
