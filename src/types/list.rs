@@ -1,5 +1,5 @@
-use crate::types::custom_object::CustomObject;
 use crate::types::error::{Error, Result};
+use crate::types::object::CustomObject;
 use crate::types::value::{Primitive, Value, method1};
 use std::any::Any;
 

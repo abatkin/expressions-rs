@@ -1,6 +1,6 @@
-pub(crate) use crate::types::custom_object::CustomObject;
 use crate::types::dict_members::get_dict_member;
 use crate::types::error::{Error, Result};
+pub(crate) use crate::types::object::CustomObject;
 use crate::types::string_members::get_string_member;
 use std::collections::BTreeMap;
 use std::fmt;
