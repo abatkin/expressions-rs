@@ -12,6 +12,11 @@ use std::rc::Rc;
 pub fn new(map: BTreeMap<String, Value>) -> Value {
     Value::Object(Rc::new(DictObject::new(map)))
 }
+pub fn new_string_dict(map: BTreeMap<String, String>) -> DictObject {
+    DictObject {
+        map: map.into_iter().map(|(k, v)| (k, Value::Primitive(Primitive::Str(v)))).collect(),
+    }
+}
 pub struct DictObject {
     map: BTreeMap<String, Value>,
 }

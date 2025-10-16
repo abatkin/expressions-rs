@@ -1,33 +1,52 @@
-use crate::parser::parse;
+use crate::parser::{ExpressionParser, InterpolationParser};
 use crate::types::error::{Error, Result};
 use crate::types::expression::{BinaryOp, Expr, UnaryOp};
 use crate::types::primitive::Primitive;
 use crate::types::value::Value;
 use crate::types::{dict, list};
 
-pub trait VariableResolver {
-    fn resolve(&self, name: &str) -> Option<Value>;
+pub struct ExpressionEvaluator<'a, R: VariableResolver> {
+    evaluator: Evaluator<R>,
+    parser: ExpressionParser<'a>,
 }
 
-pub struct Evaluator<R: VariableResolver> {
-    pub resolver: R,
-}
-
-impl<R: VariableResolver> Evaluator<R> {
+impl<'a, R: VariableResolver> ExpressionEvaluator<'a, R> {
     pub fn new(resolver: R) -> Self {
-        Self { resolver }
+        Self {
+            evaluator: Evaluator::new(resolver),
+            parser: ExpressionParser::default(),
+        }
     }
 
-    // Evaluate a string with ${...} interpolations
-    pub fn evaluate_interpolated(&self, input: &str) -> Result<String> {
+    pub fn evaluate(&self, input: &'a str) -> Result<Value> {
+        let expr = self.parser.parse(input)?;
+        let result = self.evaluator.evaluate(&expr).map_err(|e| Error::EvaluationFailed(format!("evaluation error: {}", e)))?;
+        Ok(result)
+    }
+}
+
+pub struct InterpolationEvaluator<'a, R: VariableResolver> {
+    evaluator: Evaluator<R>,
+    parser: InterpolationParser<'a>,
+}
+
+impl<'a, R: VariableResolver> InterpolationEvaluator<'a, R> {
+    pub fn new(resolver: R) -> Self {
+        Self {
+            evaluator: Evaluator::new(resolver),
+            parser: InterpolationParser::default(),
+        }
+    }
+
+    pub fn evaluate(&self, input: &'a str) -> Result<String> {
         let mut out = String::new();
         let mut rest = input;
         while let Some(idx) = rest.find("${") {
             // copy literal part before the interpolation
             out.push_str(&rest[..idx]);
             let after = &rest[idx + 2..];
-            let (expr, consumed) = crate::parser::parse_in_braces(after)?;
-            let val = self.evaluate(&expr)?;
+            let (expr, consumed) = self.parser.parse(after)?;
+            let val = self.evaluator.evaluate(&expr)?;
             out.push_str(&val.as_str_lossy());
             rest = &after[consumed..];
         }
@@ -35,11 +54,19 @@ impl<R: VariableResolver> Evaluator<R> {
         out.push_str(rest);
         Ok(out)
     }
+}
 
-    pub fn evaluate_string(&self, input: &str) -> Result<Value> {
-        let expr = parse(input)?;
-        let result = self.evaluate(&expr).map_err(|e| Error::EvaluationFailed(format!("evaluation error: {}", e)))?;
-        Ok(result)
+pub trait VariableResolver {
+    fn resolve(&self, name: &str) -> Option<Value>;
+}
+
+pub struct Evaluator<R: VariableResolver> {
+    resolver: R,
+}
+
+impl<R: VariableResolver> Evaluator<R> {
+    pub fn new(resolver: R) -> Self {
+        Self { resolver }
     }
 
     pub fn evaluate(&self, expr: &Expr) -> Result<Value> {
@@ -365,8 +392,26 @@ mod tests {
     fn eval_from_file_cases() {
         // Load test cases file at compile time
         const CASES: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/evaluator_cases.txt"));
-        let ev = Evaluator::new(MockResolver::new());
-        for (idx, raw_line) in CASES.lines().enumerate() {
+        eval_from_file(CASES, |expr_src| {
+            let ev = ExpressionEvaluator::new(MockResolver);
+            ev.evaluate(expr_src).map(|v| v.to_string())
+        });
+    }
+
+    #[test]
+    fn eval_interpolated_from_file() {
+        const CASES: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/interpolator_cases.txt"));
+        eval_from_file(CASES, |expr_src| {
+            let ev: InterpolationEvaluator<MockResolver> = InterpolationEvaluator::new(MockResolver);
+            ev.evaluate(expr_src)
+        });
+    }
+
+    fn eval_from_file<F>(cases: &str, evaluator: F) 
+    where
+        F: Fn(&str) -> Result<String>,
+    {
+        for (idx, raw_line) in cases.lines().enumerate() {
             let line_no = idx + 1;
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
@@ -377,18 +422,17 @@ mod tests {
             let expr_src = parts[0].trim();
             let expected_str = parts[1].trim();
 
-            let expr = parse(expr_src).expect(&format!("Failed to parse expression on line {}: '{}'", line_no, expr_src));
-            let actual_val = ev.evaluate(&expr).expect(&format!("Evaluation failed on line {} for expr '{}': parsed: {:?}", line_no, expr_src, expr));
-            let actual_str = actual_val.to_string();
+            let actual_val = evaluator(expr_src);
+            assert!(actual_val.is_ok(), "Evaluation failed on line {} for expr '{}': {}", line_no, expr_src, actual_val.unwrap_err());
+            let actual_str = actual_val.unwrap();
 
             assert_eq!(actual_str, expected_str, "Mismatch on line {} for expr '{}': got '{}', expected '{}'", line_no, expr_src, actual_str, expected_str);
         }
+
     }
 
     #[test]
     fn eval_interpolated_strings() {
-        let ev = Evaluator::new(MockResolver::new());
-
         // sanity: parser parse_in_braces works on simple input
         assert!(crate::parser::parse_in_braces("1 + 2}").is_ok());
         // simple literal with expression
@@ -397,23 +441,26 @@ mod tests {
         let after = &src[idx + 2..];
         assert_eq!(after, "1 + 2}");
         assert!(crate::parser::parse_in_braces(after).is_ok());
-        let s = ev.evaluate_interpolated(src).unwrap();
+
+        let eval = InterpolationEvaluator::new(MockResolver::new());
+
+        let s = eval.evaluate(src).unwrap();
         assert_eq!(s, "Hello 3");
 
         // variable path
-        let s2 = ev.evaluate_interpolated("x is ${x}").unwrap();
+        let s2 = eval.evaluate("x is ${x}").unwrap();
         assert_eq!(s2, "x is 10");
 
         // multiple interpolations
-        let s3 = ev.evaluate_interpolated("${'A'}-${add(2,3)}-${truth}").unwrap();
+        let s3 = eval.evaluate("${'A'}-${add(2,3)}-${truth}").unwrap();
         assert_eq!(s3, "A-5-true");
 
         // ensure braces inside strings are handled
-        let s4 = ev.evaluate_interpolated("${'curly } brace'} done").unwrap();
+        let s4 = eval.evaluate("${'curly } brace'} done").unwrap();
         assert_eq!(s4, "curly } brace done");
 
         // missing closing brace should error
-        match ev.evaluate_interpolated("bad ${1+2") {
+        match eval.evaluate("bad ${1+2") {
             Err(Error::ParseFailed(_, _)) => (),
             other => panic!("expected parse error, got {:?}", other),
         }

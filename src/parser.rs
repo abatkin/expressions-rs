@@ -183,59 +183,89 @@ fn expr_and_spacer<'src>() -> (impl Parser<'src, &'src str, ()> + Clone, impl Pa
     (spacer, expr)
 }
 
-pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr> {
-    let (spacer, expr) = expr_and_spacer();
-
-    // Allow multiple expressions separated by whitespace/comments and take the last one
-    let program = spacer
-        .clone()
-        .ignore_then(expr.clone())
-        .then_ignore(spacer.clone())
-        .repeated()
-        .at_least(1)
-        .collect::<Vec<_>>()
-        .map(|mut v: Vec<Expr>| v.pop().unwrap());
-
-    program.then_ignore(end())
+pub struct ExpressionParser<'a> {
+    parser: Boxed<'a, 'a, &'a str, Expr>,
 }
 
-// Main entry point for parsing an expression, returns the AST (Expr) or Error
+impl<'a> Default for ExpressionParser<'a> {
+    fn default() -> Self {
+        let (spacer, expr) = expr_and_spacer();
+
+        // Allow multiple expressions separated by whitespace/comments and take the last one
+        let parser = spacer
+            .clone()
+            .ignore_then(expr.clone())
+            .then_ignore(spacer.clone())
+            .repeated()
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .map(|mut v: Vec<Expr>| v.pop().unwrap())
+            .then_ignore(end());
+
+        Self { parser: parser.boxed() }
+    }
+}
+
+impl<'a> ExpressionParser<'a> {
+    pub fn parse(&self, input: &'a str) -> Result<Expr> {
+        match self.parser.parse(input).into_result() {
+            Ok(ast) => Ok(ast),
+            Err(errs) => {
+                let joined = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+                let snippet: String = input.chars().take(80).collect();
+                let msg = if joined.trim().is_empty() { "parse error".to_string() } else { joined };
+                Err(Error::ParseFailed(msg, snippet))
+            }
+        }
+    }
+}
+
 pub fn parse(input: &str) -> Result<Expr> {
-    match parser().parse(input).into_result() {
-        Ok(ast) => Ok(ast),
-        Err(errs) => {
-            let joined = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-            let snippet: String = input.chars().take(80).collect();
-            let msg = if joined.trim().is_empty() { "parse error".to_string() } else { joined };
-            Err(Error::ParseFailed(msg, snippet))
+    let parser = ExpressionParser::default();
+    parser.parse(input)
+}
+
+pub struct InterpolationParser<'a> {
+    parser: Boxed<'a, 'a, &'a str, (Expr, usize)>,
+}
+
+impl<'a> Default for InterpolationParser<'a> {
+    fn default() -> Self {
+        // Use the existing expression parser and require a trailing '}' using parser combinators.
+        // This leverages the parser's own handling of strings, escapes, and nesting instead of manual scanning.
+        let (_spacer, expr) = expr_and_spacer();
+        let program = expr
+            .clone()
+            .then_ignore(just('}'))
+            .map_with(|e, extra| {
+                let span = extra.span();
+                (e, span.end)
+            })
+            .then_ignore(any().repeated()); // allow trailing content after '}' so callers can continue scanning
+
+        InterpolationParser { parser: program.boxed() }
+    }
+}
+
+impl<'a> InterpolationParser<'a> {
+    pub fn parse(&self, input: &'a str) -> Result<(Expr, usize)> {
+        match self.parser.parse(input).into_result() {
+            Ok((ast, consumed)) => Ok((ast, consumed)),
+            Err(errs) => {
+                let joined = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+                let snippet: String = input.chars().take(80).collect();
+                let msg = if joined.trim().is_empty() { "parse error".to_string() } else { joined };
+                Err(Error::ParseFailed(msg, snippet))
+            }
         }
     }
 }
 
 // Parse an expression that must be terminated by a closing '}' and return
 // the parsed Expr along with the number of bytes consumed (including the '}').
-pub(crate) fn parse_in_braces(input: &str) -> Result<(Expr, usize)> {
-    // Use the existing expression parser and require a trailing '}' using parser combinators.
-    // This leverages the parser's own handling of strings, escapes, and nesting instead of manual scanning.
-    let (_spacer, expr) = expr_and_spacer();
-    let p = expr
-        .clone()
-        .then_ignore(just('}'))
-        .map_with(|e, extra| {
-            let span = extra.span();
-            (e, span.end)
-        })
-        .then_ignore(any().repeated()); // allow trailing content after '}' so callers can continue scanning
-
-    match p.parse(input).into_result() {
-        Ok((ast, consumed)) => Ok((ast, consumed)),
-        Err(errs) => {
-            let joined = errs.into_iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-            let snippet: String = input.chars().take(80).collect();
-            let msg = if joined.trim().is_empty() { "parse error".to_string() } else { joined };
-            Err(Error::ParseFailed(msg, snippet))
-        }
-    }
+pub fn parse_in_braces(input: &str) -> Result<(Expr, usize)> {
+    let parser = InterpolationParser::default();
+    parser.parse(input)
 }
 
 #[cfg(test)]
