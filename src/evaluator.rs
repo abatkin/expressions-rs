@@ -407,7 +407,7 @@ mod tests {
         });
     }
 
-    fn eval_from_file<F>(cases: &str, evaluator: F) 
+    fn eval_from_file<F>(cases: &str, evaluator: F)
     where
         F: Fn(&str) -> Result<String>,
     {
@@ -428,7 +428,6 @@ mod tests {
 
             assert_eq!(actual_str, expected_str, "Mismatch on line {} for expr '{}': got '{}', expected '{}'", line_no, expr_src, actual_str, expected_str);
         }
-
     }
 
     #[test]
