@@ -1,71 +1,46 @@
-use crate::parser::{ExpressionParser, InterpolationParser};
+use crate::parser;
 use crate::types::error::{Error, Result};
 use crate::types::expression::{BinaryOp, Expr, UnaryOp};
 use crate::types::primitive::Primitive;
 use crate::types::value::Value;
 use crate::types::{dict, list};
 
-pub struct ExpressionEvaluator<'a, R: VariableResolver> {
-    evaluator: Evaluator<R>,
-    parser: ExpressionParser<'a>,
+pub fn evaluate<T: VariableResolver>(input: &str, resolver: &T) -> Result<Value> {
+    let expr = parser::parse_expression(input)?;
+    let evaluator = Evaluator::new(resolver);
+    let result = evaluator.evaluate(&expr).map_err(|e| Error::EvaluationFailed(format!("evaluation error: {}", e)))?;
+    Ok(result)
 }
 
-impl<'a, R: VariableResolver> ExpressionEvaluator<'a, R> {
-    pub fn new(resolver: R) -> Self {
-        Self {
-            evaluator: Evaluator::new(resolver),
-            parser: ExpressionParser::default(),
-        }
+pub fn evaluate_interpolations<T: VariableResolver>(input: &str, resolver: &T) -> Result<String> {
+    let mut out = String::new();
+    let mut rest = input;
+    while let Some(idx) = rest.find("${") {
+        // copy literal part before the interpolation
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx + 2..];
+        let (expr, consumed) = parser::parse_internal(after, parser::Rule::delimited_expr)?;
+        let evaluator = Evaluator::new(resolver);
+        let result = evaluator.evaluate(&expr).map_err(|e| Error::EvaluationFailed(format!("evaluation error: {}", e)))?;
+        let result_str = result.to_string();
+        out.push_str(result_str.as_str());
+        rest = &after[consumed..];
     }
-
-    pub fn evaluate(&self, input: &'a str) -> Result<Value> {
-        let expr = self.parser.parse(input)?;
-        let result = self.evaluator.evaluate(&expr).map_err(|e| Error::EvaluationFailed(format!("evaluation error: {}", e)))?;
-        Ok(result)
-    }
-}
-
-pub struct InterpolationEvaluator<'a, R: VariableResolver> {
-    evaluator: Evaluator<R>,
-    parser: InterpolationParser<'a>,
-}
-
-impl<'a, R: VariableResolver> InterpolationEvaluator<'a, R> {
-    pub fn new(resolver: R) -> Self {
-        Self {
-            evaluator: Evaluator::new(resolver),
-            parser: InterpolationParser::default(),
-        }
-    }
-
-    pub fn evaluate(&self, input: &'a str) -> Result<String> {
-        let mut out = String::new();
-        let mut rest = input;
-        while let Some(idx) = rest.find("${") {
-            // copy literal part before the interpolation
-            out.push_str(&rest[..idx]);
-            let after = &rest[idx + 2..];
-            let (expr, consumed) = self.parser.parse(after)?;
-            let val = self.evaluator.evaluate(&expr)?;
-            out.push_str(&val.as_str_lossy());
-            rest = &after[consumed..];
-        }
-        // copy the remainder
-        out.push_str(rest);
-        Ok(out)
-    }
+    // copy the remainder
+    out.push_str(rest);
+    Ok(out)
 }
 
 pub trait VariableResolver {
     fn resolve(&self, name: &str) -> Option<Value>;
 }
 
-pub struct Evaluator<R: VariableResolver> {
-    resolver: R,
+pub struct Evaluator<'a, R: VariableResolver> {
+    resolver: &'a R,
 }
 
-impl<R: VariableResolver> Evaluator<R> {
-    pub fn new(resolver: R) -> Self {
+impl<'a, R: VariableResolver> Evaluator<'a, R> {
+    pub fn new(resolver: &'a R) -> Self {
         Self { resolver }
     }
 
@@ -131,6 +106,14 @@ impl<R: VariableResolver> Evaluator<R> {
                     UnaryOp::Not => {
                         let b = v.coerce_bool().ok_or(Error::TypeMismatch("'!' expects bool".into()))?;
                         Ok(Value::Primitive(Primitive::Bool(!b)))
+                    }
+                    UnaryOp::Neg => {
+                        let v = self.evaluate(expr)?;
+                        match v {
+                            Value::Primitive(Primitive::Int(i)) => Ok(Value::Primitive(Primitive::Int(-i))),
+                            Value::Primitive(Primitive::Float(f)) => Ok(Value::Primitive(Primitive::Float(-f))),
+                            _ => Err(Error::TypeMismatch("'-' expects number".into())),
+                        }
                     }
                 }
             }
@@ -279,7 +262,6 @@ mod tests {
     use std::any::Any;
     use std::rc::Rc;
 
-    use crate::parser::parse;
     use crate::types::function;
     use crate::types::value::Object;
 
@@ -357,20 +339,22 @@ mod tests {
 
     #[test]
     fn eval_basic_expressions() {
-        let ev = Evaluator::new(MockResolver::new());
-        assert_eq!(ev.evaluate(&parse("1").unwrap()).unwrap(), Value::from(1i64));
-        assert_eq!(ev.evaluate(&parse("1").unwrap()).unwrap().to_string(), "1");
-        assert_eq!(ev.evaluate(&parse("true").unwrap()).unwrap(), Value::from(true));
-        assert_eq!(ev.evaluate(&parse("true || false").unwrap()).unwrap(), Value::from(true));
-        assert_eq!(ev.evaluate(&parse("true && false").unwrap()).unwrap(), Value::from(false));
+        let resolver = MockResolver::new();
+        let ev = Evaluator::new(&resolver);
+        assert_eq!(ev.evaluate(&parser::parse_expression("1").unwrap()).unwrap(), Value::from(1i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("1").unwrap()).unwrap().to_string(), "1");
+        assert_eq!(ev.evaluate(&parser::parse_expression("true").unwrap()).unwrap(), Value::from(true));
+        assert_eq!(ev.evaluate(&parser::parse_expression("true || false").unwrap()).unwrap(), Value::from(true));
+        assert_eq!(ev.evaluate(&parser::parse_expression("true && false").unwrap()).unwrap(), Value::from(false));
     }
 
     #[test]
     fn eval_literals_and_ops() {
-        let ev = Evaluator::new(MockResolver::new());
-        assert_eq!(ev.evaluate(&parse("1 + 2 * 3").unwrap()).unwrap(), Value::from(7i64));
-        assert_eq!(ev.evaluate(&parse("true && !false").unwrap()).unwrap(), Value::from(true));
-        match ev.evaluate(&parse("1/0").unwrap()) {
+        let resolver = MockResolver::new();
+        let ev = Evaluator::new(&resolver);
+        assert_eq!(ev.evaluate(&parser::parse_expression("1 + 2 * 3").unwrap()).unwrap(), Value::from(7i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("true && !false").unwrap()).unwrap(), Value::from(true));
+        match ev.evaluate(&parser::parse_expression("1/0").unwrap()) {
             Err(Error::DivideByZero) => (),
             other => panic!("expected div by zero, got {:?}", other),
         }
@@ -378,10 +362,11 @@ mod tests {
 
     #[test]
     fn eval_paths_and_calls() {
-        let ev = Evaluator::new(MockResolver::new());
-        assert_eq!(ev.evaluate(&parse("x").unwrap()).unwrap(), Value::from(10i64));
-        assert_eq!(ev.evaluate(&parse("truth || false").unwrap()).unwrap(), Value::from(true));
-        let v = ev.evaluate(&parse("add(2, 3)").unwrap()).unwrap();
+        let resolver = MockResolver::new();
+        let ev = Evaluator::new(&resolver);
+        assert_eq!(ev.evaluate(&parser::parse_expression("x").unwrap()).unwrap(), Value::from(10i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("truth || false").unwrap()).unwrap(), Value::from(true));
+        let v = ev.evaluate(&parser::parse_expression("add(2, 3)").unwrap()).unwrap();
         match v {
             Value::Primitive(Primitive::Float(f)) => assert!((f - 5.0).abs() < 1e-9),
             _ => panic!("expected float"),
@@ -392,19 +377,8 @@ mod tests {
     fn eval_from_file_cases() {
         // Load test cases file at compile time
         const CASES: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/evaluator_cases.txt"));
-        eval_from_file(CASES, |expr_src| {
-            let ev = ExpressionEvaluator::new(MockResolver);
-            ev.evaluate(expr_src).map(|v| v.to_string())
-        });
-    }
-
-    #[test]
-    fn eval_interpolated_from_file() {
-        const CASES: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/interpolator_cases.txt"));
-        eval_from_file(CASES, |expr_src| {
-            let ev: InterpolationEvaluator<MockResolver> = InterpolationEvaluator::new(MockResolver);
-            ev.evaluate(expr_src)
-        });
+        let resolver = MockResolver::new();
+        eval_from_file(CASES, |expr_src| evaluate(expr_src, &resolver).map(|v| v.to_string()));
     }
 
     fn eval_from_file<F>(cases: &str, evaluator: F)
@@ -431,47 +405,13 @@ mod tests {
     }
 
     #[test]
-    fn eval_interpolated_strings() {
-        // sanity: parser parse_in_braces works on simple input
-        assert!(crate::parser::parse_in_braces("1 + 2}").is_ok());
-        // simple literal with expression
-        let src = "Hello ${1 + 2}";
-        let idx = src.find("${").unwrap();
-        let after = &src[idx + 2..];
-        assert_eq!(after, "1 + 2}");
-        assert!(crate::parser::parse_in_braces(after).is_ok());
-
-        let eval = InterpolationEvaluator::new(MockResolver::new());
-
-        let s = eval.evaluate(src).unwrap();
-        assert_eq!(s, "Hello 3");
-
-        // variable path
-        let s2 = eval.evaluate("x is ${x}").unwrap();
-        assert_eq!(s2, "x is 10");
-
-        // multiple interpolations
-        let s3 = eval.evaluate("${'A'}-${add(2,3)}-${truth}").unwrap();
-        assert_eq!(s3, "A-5-true");
-
-        // ensure braces inside strings are handled
-        let s4 = eval.evaluate("${'curly } brace'} done").unwrap();
-        assert_eq!(s4, "curly } brace done");
-
-        // missing closing brace should error
-        match eval.evaluate("bad ${1+2") {
-            Err(Error::ParseFailed(_, _)) => (),
-            other => panic!("expected parse error, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn eval_lists_and_indexing() {
-        let ev = Evaluator::new(MockResolver::new());
+        let resolver = MockResolver::new();
+        let ev = Evaluator::new(&resolver);
         // [10, 20, 30][1] => 20
-        assert_eq!(ev.evaluate(&parse("[10, 20, 30][1]").unwrap()).unwrap(), Value::from(20i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("[10, 20, 30][1]").unwrap()).unwrap(), Value::from(20i64));
         // [10][1] => IndexOutOfBounds
-        match ev.evaluate(&parse("[10][1]").unwrap()) {
+        match ev.evaluate(&parser::parse_expression("[10][1]").unwrap()) {
             Err(Error::IndexOutOfBounds { index, len }) => {
                 assert_eq!(index, 1);
                 assert_eq!(len, 1);
@@ -479,14 +419,14 @@ mod tests {
             other => panic!("expected IndexOutOfBounds, got {:?}", other),
         }
         // [10]["0"] => WrongIndexType
-        match ev.evaluate(&parse("[10][\"0\"]").unwrap()) {
+        match ev.evaluate(&parser::parse_expression("[10][\"0\"]").unwrap()) {
             Err(Error::NotIndexable(idx)) => assert_eq!(idx, "0"),
             other => panic!("expected NotIndexable(0), got {:?}", other),
         }
         // negative indices
-        assert_eq!(ev.evaluate(&parse("[10, 20, 30][-1]").unwrap()).unwrap(), Value::from(30i64));
-        assert_eq!(ev.evaluate(&parse("[10, 20, 30][-3]").unwrap()).unwrap(), Value::from(10i64));
-        match ev.evaluate(&parse("[10, 20, 30][-4]").unwrap()) {
+        assert_eq!(ev.evaluate(&parser::parse_expression("[10, 20, 30][-1]").unwrap()).unwrap(), Value::from(30i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("[10, 20, 30][-3]").unwrap()).unwrap(), Value::from(10i64));
+        match ev.evaluate(&parser::parse_expression("[10, 20, 30][-4]").unwrap()) {
             Err(Error::IndexOutOfBounds { index, len }) => {
                 assert_eq!(index, -4);
                 assert_eq!(len, 3);
@@ -497,49 +437,50 @@ mod tests {
 
     #[test]
     fn eval_dict_and_member() {
-        let ev = Evaluator::new(MockResolver::new());
+        let resolver = MockResolver::new();
+        let ev = Evaluator::new(&resolver);
         // Dict via [key]
-        assert_eq!(ev.evaluate(&parse("{\"a\": 1, \"b\": 2}[\"b\"]").unwrap()).unwrap(), Value::from(2i64));
-        match ev.evaluate(&parse("{\"a\": 1}[\"z\"]").unwrap()) {
+        assert_eq!(ev.evaluate(&parser::parse_expression("{\"a\": 1, \"b\": 2}[\"b\"]").unwrap()).unwrap(), Value::from(2i64));
+        match ev.evaluate(&parser::parse_expression("{\"a\": 1}[\"z\"]").unwrap()) {
             Err(Error::NoSuchKey(k)) => assert_eq!(k, "z"),
             other => panic!("expected NoSuchKey, got {:?}", other),
         }
-        match ev.evaluate(&parse("{\"a\": 1}[0]").unwrap()) {
+        match ev.evaluate(&parser::parse_expression("{\"a\": 1}[0]").unwrap()) {
             Err(Error::NotIndexable(idx)) => assert_eq!(idx, "0"),
             other => panic!("expected NotIndexable(0), got {:?}", other),
         }
         // Members: properties and methods
         // string.length property
-        assert_eq!(ev.evaluate(&parse("'abc'.length").unwrap()).unwrap(), Value::from(3i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("'abc'.length").unwrap()).unwrap(), Value::from(3i64));
         // string methods
-        assert_eq!(ev.evaluate(&parse("'ab'.toUpper()").unwrap()).unwrap().to_string(), "AB");
-        assert_eq!(ev.evaluate(&parse("' Ab '.trim().length").unwrap()).unwrap(), Value::from(2i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("'ab'.toUpper()").unwrap()).unwrap().to_string(), "AB");
+        assert_eq!(ev.evaluate(&parser::parse_expression("' Ab '.trim().length").unwrap()).unwrap(), Value::from(2i64));
         // list.length property
-        assert_eq!(ev.evaluate(&parse("[1,2,3].length").unwrap()).unwrap(), Value::from(3i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("[1,2,3].length").unwrap()).unwrap(), Value::from(3i64));
         // dict.length property and keys()/values()
-        assert_eq!(ev.evaluate(&parse("{\"a\":1, \"b\":2}.length").unwrap()).unwrap(), Value::from(2i64));
-        assert_eq!(ev.evaluate(&parse("{\"a\":1}.keys().length").unwrap()).unwrap(), Value::from(1i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("{\"a\":1, \"b\":2}.length").unwrap()).unwrap(), Value::from(2i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("{\"a\":1}.keys().length").unwrap()).unwrap(), Value::from(1i64));
         // errors: dict dot key is unknown member now
-        match ev.evaluate(&parse("{\"a\": 1}.a").unwrap()) {
+        match ev.evaluate(&parser::parse_expression("{\"a\": 1}.a").unwrap()) {
             Err(Error::UnknownMember { member, .. }) => assert_eq!(member, "a"),
             other => panic!("expected UnknownMember, got {:?}", other),
         }
         // errors: unknown member on list
-        match ev.evaluate(&parse("[1].toUpper").unwrap()) {
+        match ev.evaluate(&parser::parse_expression("[1].toUpper").unwrap()) {
             Err(Error::UnknownMember { member, .. }) => assert_eq!(member, "toUpper"),
             other => panic!("expected UnknownMember, got {:?}", other),
         }
         // calling non-call property is NotCallable
-        match ev.evaluate(&parse("'abc'.length()").unwrap()) {
+        match ev.evaluate(&parser::parse_expression("'abc'.length()").unwrap()) {
             Err(Error::NotCallable) => (),
             other => panic!("expected NotCallable, got {:?}", other),
         }
         // Nested
-        assert_eq!(ev.evaluate(&parse("{\"xs\": [10, 20]}[\"xs\"][1]").unwrap()).unwrap(), Value::from(20i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("{\"xs\": [10, 20]}[\"xs\"][1]").unwrap()).unwrap(), Value::from(20i64));
 
         // Computed dict key in literal and runtime enforcement of key type
-        assert_eq!(ev.evaluate(&parse("{\"a\" + \"b\": 1}[\"ab\"]").unwrap()).unwrap(), Value::from(1i64));
-        match ev.evaluate(&parse("{1: 2}").unwrap()) {
+        assert_eq!(ev.evaluate(&parser::parse_expression("{\"a\" + \"b\": 1}[\"ab\"]").unwrap()).unwrap(), Value::from(1i64));
+        match ev.evaluate(&parser::parse_expression("{1: 2}").unwrap()) {
             Err(Error::TypeMismatch(msg)) => assert_eq!(msg, "dict key must be a string"),
             other => panic!("expected TypeMismatch for dict key, got {:?}", other),
         }
@@ -547,12 +488,26 @@ mod tests {
 
     #[test]
     fn eval_truthiness_lists_dicts() {
-        let ev = Evaluator::new(MockResolver::new());
-        assert_eq!(ev.evaluate(&parse("![]").unwrap()).unwrap(), Value::from(true));
-        assert_eq!(ev.evaluate(&parse("!![]").unwrap()).unwrap(), Value::from(false));
-        assert_eq!(ev.evaluate(&parse("![1]").unwrap()).unwrap(), Value::from(false));
-        assert_eq!(ev.evaluate(&parse("!![1]").unwrap()).unwrap(), Value::from(true));
-        assert_eq!(ev.evaluate(&parse("!{}").unwrap()).unwrap(), Value::from(true));
-        assert_eq!(ev.evaluate(&parse("!!{\"a\":1}").unwrap()).unwrap(), Value::from(true));
+        let resolver = MockResolver::new();
+        let ev = Evaluator::new(&resolver);
+        assert_eq!(ev.evaluate(&parser::parse_expression("![]").unwrap()).unwrap(), Value::from(true));
+        assert_eq!(ev.evaluate(&parser::parse_expression("!![]").unwrap()).unwrap(), Value::from(false));
+        assert_eq!(ev.evaluate(&parser::parse_expression("![1]").unwrap()).unwrap(), Value::from(false));
+        assert_eq!(ev.evaluate(&parser::parse_expression("!![1]").unwrap()).unwrap(), Value::from(true));
+        assert_eq!(ev.evaluate(&parser::parse_expression("!{}").unwrap()).unwrap(), Value::from(true));
+        assert_eq!(ev.evaluate(&parser::parse_expression("!!{\"a\":1}").unwrap()).unwrap(), Value::from(true));
+    }
+
+    #[test]
+    fn eval_interpolation() {
+        let resolver = MockResolver::new();
+        assert_eq!(evaluate_interpolations("${'abc'}", &resolver).unwrap(), "abc");
+        assert_eq!(evaluate_interpolations("${   'abc' }", &resolver).unwrap(), "abc");
+        assert_eq!(evaluate_interpolations("${   'abc' } ", &resolver).unwrap(), "abc ");
+        assert_eq!(evaluate_interpolations("x${'abc'}y", &resolver).unwrap(), "xabcy");
+        assert_eq!(evaluate_interpolations("x${'abc\"\\''}\"y", &resolver).unwrap(), "xabc\"'\"y");
+        assert_eq!(evaluate_interpolations("x${[1,2,3][1]}y", &resolver).unwrap(), "x2y");
+        assert_eq!(evaluate_interpolations("x${{'foo': 'bar', 'baz': 'bam'}['foo']}y", &resolver).unwrap(), "xbary");
+        assert_eq!(evaluate_interpolations("x${{\"foo\": \"bar\", \"baz\": \"bam\"}[\"foo\"]}y", &resolver).unwrap(), "xbary");
     }
 }

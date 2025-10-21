@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.3.0 Move from chumsky to pest for the parser
+
 ## 0.2.1 Add generic "Object" type
 
 ## 0.2.0 Major improvements to variable handling and language flexibility

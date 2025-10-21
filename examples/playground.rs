@@ -1,8 +1,9 @@
-use simple_expressions::evaluator::{ExpressionEvaluator, InterpolationEvaluator, VariableResolver};
+use simple_expressions::evaluator::VariableResolver;
 use simple_expressions::types::error::Result;
 use simple_expressions::types::primitive::Primitive;
 use simple_expressions::types::value::Value;
 
+use simple_expressions::evaluator;
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -31,11 +32,8 @@ fn main() -> Result<()> {
     let mut resolver = MapVariableResolver::new();
     resolver.set("foo".to_string(), "bar".to_string());
 
-    let expression_eval = ExpressionEvaluator::new(resolver.clone());
-    let interpolation_eval = InterpolationEvaluator::new(resolver);
-
-    expression_eval.evaluate("foo + 'bar'").unwrap();
-    interpolation_eval.evaluate("barbar=${foo + 'bar'}").unwrap();
+    evaluator::evaluate("foo + 'bar'", &resolver).unwrap();
+    evaluator::evaluate_interpolations("barbar=${foo + 'bar'}", &resolver).unwrap();
 
     Ok(())
 }

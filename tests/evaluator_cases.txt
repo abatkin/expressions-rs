@@ -10,14 +10,26 @@ true && false => false
 false && false => false
 false || false => false
 true || !true => true
+!true => false
+!false => true
 
+-2 => -2
 1 + 2 * 3 => 7
 (1 + 2) * 3 => 9
 10 / 2 => 5
 10 % 3 => 1
 2 ^ 3 => 8
 
+"xy" => xy
 'x' + 'y' => xy
+
+# String escapes and weirdness
+"\\" => \
+"\"" => "
+"'" => '
+'\'' => '
+'"' => "
+"can't" => can't
 
 x => 10
 truth || false => true
@@ -32,7 +44,6 @@ add(2, 3) => 5
 "abcd".substring(0) => abcd
 "abcd".substring(1,2) => b
 
-
 #### Lists
 [true][0] => true
 [1, 2, 3][1] => 2
@@ -42,6 +53,9 @@ add(2, 3) => 5
 [1, 2, 3] == [1, 2, 4] => false
 [1, 2, 3] != [1, 2, 4] => true
 [1, 2, 3] != [1, 2, 3] => false
+
+# Allow trailing commas
+[1, 2, 3,] == [1, 2, 3] => true
 
 [] && true => false
 [1, 2, 3] && true => true
@@ -77,6 +91,9 @@ add(2, 3) => 5
 {"a": 1, "b": 2} == {"a": 1, "b": 3} => false
 {"a": 1, "b": 2} != {"a": 1, "b": 2} => false
 {"a": 1, "b": 2} != {"a": 1, "b": 3} => true
+
+# Allow trailing commas
+{"a": 1, "b": 2,} == {"a": 1, "b": 2} => true
 
 
 #### Custom Objects

@@ -1,0 +1,59 @@
+WHITESPACE = _{ " " | "\t" | NEWLINE }
+NEWLINE     = _{ "\r\n" | "\n" | "\r" }
+COMMENT     = _{ "//" ~ (!NEWLINE ~ ANY)* }
+
+program        = { SOI ~ expr ~ EOI }
+delimited_expr = { SOI ~ expr ~ "}" }
+
+// Expressions and precedence (operators are recognized by Pratt in Rust)
+expr        = { unary ~ ( (op_or | op_and | op_eq | op_cmp | op_add | op_mul | op_pow) ~ unary )* }
+
+unary       = { unary_op* ~ postfix }
+unary_op    = { not_op | neg_op }
+not_op      = @{ "!" }
+neg_op      = @{ "-" }
+
+postfix     = { primary ~ (call | index | property)* }
+
+call        = { "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+index       = { "[" ~ expr ~ "]" }
+property    = { "." ~ ident }
+
+primary     = { number | boolean | string | list | dict | ident | parens }
+parens      = { "(" ~ expr ~ ")" }
+
+// Literals
+number      = { float | int }
+int         = @{ ASCII_DIGIT+ }
+float       = @{
+    (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ exponent?)  // 1.23  1.23e+4
+  | ("." ~ ASCII_DIGIT+ ~ exponent?)                  // .5    .5e2
+  | (ASCII_DIGIT+ ~ exponent)                          // 1e10
+}
+exponent    = @{ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+ }
+
+boolean     = { true_kw | false_kw }
+true_kw     = @{ "true" }
+false_kw    = @{ "false" }
+
+string        = { PUSH( "\"" | "'" ) ~ string_char* ~ POP }
+string_char   = @{ quoted_escape | (!(PEEK | NEWLINE) ~ ANY) }
+quoted_escape = @{ "\\n" | "\\\\" | "\\" ~ PEEK }
+
+// Collections
+list        = { "[" ~ (expr ~ ("," ~ expr)* ~ ","?)? ~ "]" }
+
+pair        = { expr ~ ":" ~ expr }
+dict        = { "{" ~ (pair ~ ("," ~ pair)* ~ ","?)? ~ "}" }
+
+// Operators (atomic to avoid accidental spaces inside)
+op_or       = @{ "||" }
+op_and      = @{ "&&" }
+op_add      = @{ "+" | "-" }
+op_mul      = @{ "*" | "/" | "%" }
+op_pow      = @{ "^" }
+op_eq       = @{ "==" | "!=" }
+op_cmp      = @{ "<=" | ">=" | "<" | ">" }
+
+// Identifiers
+ident       = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
