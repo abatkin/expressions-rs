@@ -13,12 +13,6 @@ pub enum Value {
 }
 
 impl Value {
-    pub fn coerce_bool(&self) -> Option<bool> {
-        match self {
-            Value::Primitive(p) => p.coerce_bool(),
-            Value::Object(obj) => obj.as_bool(),
-        }
-    }
     pub fn to_float_lossy(&self) -> Option<f64> {
         match self {
             Value::Primitive(p) => p.to_float_lossy(),

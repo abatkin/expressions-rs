@@ -1,4 +1,5 @@
 use crate::parser;
+use crate::types::coerce::{Coercions, Context, Number, STANDARD};
 use crate::types::error::{Error, Result};
 use crate::types::expression::{BinaryOp, Expr, UnaryOp};
 use crate::types::primitive::Primitive;
@@ -6,13 +7,23 @@ use crate::types::value::Value;
 use crate::types::{dict, list};
 
 pub fn evaluate<T: VariableResolver>(input: &str, resolver: &T) -> Result<Value> {
+    evaluate_with(input, resolver, &STANDARD)
+}
+
+/// Like [`evaluate`], with an explicit coercion policy.
+pub fn evaluate_with<T: VariableResolver>(input: &str, resolver: &T, coercions: &dyn Coercions) -> Result<Value> {
     let expr = parser::parse_expression(input)?;
-    let evaluator = Evaluator::new(resolver);
+    let evaluator = Evaluator::new_with_coercions(resolver, coercions);
     let result = evaluator.evaluate(&expr).map_err(|e| Error::EvaluationFailed(format!("evaluation error: {}", e)))?;
     Ok(result)
 }
 
 pub fn evaluate_interpolations<T: VariableResolver>(input: &str, resolver: &T) -> Result<String> {
+    evaluate_interpolations_with(input, resolver, &STANDARD)
+}
+
+/// Like [`evaluate_interpolations`], with an explicit coercion policy.
+pub fn evaluate_interpolations_with<T: VariableResolver>(input: &str, resolver: &T, coercions: &dyn Coercions) -> Result<String> {
     let mut out = String::new();
     let mut rest = input;
     while let Some(idx) = rest.find("${") {
@@ -20,7 +31,7 @@ pub fn evaluate_interpolations<T: VariableResolver>(input: &str, resolver: &T) -
         out.push_str(&rest[..idx]);
         let after = &rest[idx + 2..];
         let (expr, consumed) = parser::parse_internal(after, parser::Rule::delimited_expr)?;
-        let evaluator = Evaluator::new(resolver);
+        let evaluator = Evaluator::new_with_coercions(resolver, coercions);
         let result = evaluator.evaluate(&expr).map_err(|e| Error::EvaluationFailed(format!("evaluation error: {}", e)))?;
         let result_str = result.to_string();
         out.push_str(result_str.as_str());
@@ -37,11 +48,22 @@ pub trait VariableResolver {
 
 pub struct Evaluator<'a, R: VariableResolver> {
     resolver: &'a R,
+    context: Context<'a>,
 }
 
 impl<'a, R: VariableResolver> Evaluator<'a, R> {
     pub fn new(resolver: &'a R) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            context: Context::new(&STANDARD),
+        }
+    }
+
+    pub fn new_with_coercions(resolver: &'a R, coercions: &'a dyn Coercions) -> Self {
+        Self {
+            resolver,
+            context: Context::new(coercions),
+        }
     }
 
     pub fn evaluate(&self, expr: &Expr) -> Result<Value> {
@@ -104,7 +126,7 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                 let v = self.evaluate(expr)?;
                 match op {
                     UnaryOp::Not => {
-                        let b = v.coerce_bool().ok_or(Error::TypeMismatch("'!' expects bool".into()))?;
+                        let b = self.context.to_bool(&v)?;
                         Ok(Value::Primitive(Primitive::Bool(!b)))
                     }
                     UnaryOp::Neg => {
@@ -136,7 +158,7 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                 for a in args {
                     vals.push(self.evaluate(a)?);
                 }
-                obj.call(&vals)
+                obj.call(&vals, &self.context)
             }
             _ => Err(Error::NotCallable),
         }
@@ -147,20 +169,22 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
         match op {
             Or => {
                 let l = self.evaluate(left)?;
-                let lb = l.coerce_bool().ok_or(Error::TypeMismatch("'||' expects bools".into()))?;
+                let lb = self.context.to_bool(&l)?;
                 if lb {
                     return Ok(Value::Primitive(Primitive::Bool(true)));
                 }
-                let rb = self.evaluate(right)?.coerce_bool().ok_or(Error::TypeMismatch("'&&' expects bools".into()))?;
+                let r = self.evaluate(right)?;
+                let rb = self.context.to_bool(&r)?;
                 Ok(Value::Primitive(Primitive::Bool(lb || rb)))
             }
             And => {
                 let l = self.evaluate(left)?;
-                let lb = l.coerce_bool().ok_or(Error::TypeMismatch("'&&' expects bools".into()))?;
+                let lb = self.context.to_bool(&l)?;
                 if !lb {
                     return Ok(Value::Primitive(Primitive::Bool(false)));
                 }
-                let rb = self.evaluate(right)?.coerce_bool().ok_or(Error::TypeMismatch("'&&' expects bools".into()))?;
+                let r = self.evaluate(right)?;
+                let rb = self.context.to_bool(&r)?;
                 Ok(Value::Primitive(Primitive::Bool(lb && rb)))
             }
             Eq => {
@@ -176,7 +200,21 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
             Lt | Le | Gt | Ge => {
                 let l = self.evaluate(left)?;
                 let r = self.evaluate(right)?;
-                // numeric or string comparisons
+                // two integers compare exactly: i64 -> f64 loses precision above 2^53,
+                // which otherwise makes '<' disagree with '=='
+                if let (Value::Primitive(Primitive::Int(a)), Value::Primitive(Primitive::Int(b))) = (&l, &r) {
+                    let res = match op {
+                        Lt => a < b,
+                        Le => a <= b,
+                        Gt => a > b,
+                        Ge => a >= b,
+                        _ => unreachable!(),
+                    };
+                    return Ok(Value::Primitive(Primitive::Bool(res)));
+                }
+                // NOTE: deliberately not routed through the coercion policy. "Is it a
+                // number?" is the operator's dispatch test here, not a conversion --
+                // failing it selects string comparison instead. See Add, below.
                 if let (Some(a), Some(b)) = (l.to_float_lossy(), r.to_float_lossy()) {
                     let res = match op {
                         Lt => a < b,
@@ -205,6 +243,9 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                 match (&l, &r) {
                     (Value::Primitive(Primitive::Int(a)), Value::Primitive(Primitive::Int(b))) => Ok(Value::Primitive(Primitive::Int(a + b))),
                     _ => {
+                        // NOTE: not routed through the coercion policy either. A policy
+                        // that read strings as numbers would silently turn '"2" + "3"'
+                        // from "23" into 5 -- an operator-dispatch change, not a coercion.
                         let (af, bf) = (l.to_float_lossy(), r.to_float_lossy());
                         if let (Some(af), Some(bf)) = (af, bf) {
                             Ok(Value::Primitive(Primitive::Float(af + bf)))
@@ -219,38 +260,40 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
             Sub | Mul | Div | Mod | Pow => {
                 let l = self.evaluate(left)?;
                 let r = self.evaluate(right)?;
-                // Preserve integers for Sub, Mul, Mod if both ints
-                match (op, &l, &r) {
-                    (BinaryOp::Sub, Value::Primitive(Primitive::Int(a)), Value::Primitive(Primitive::Int(b))) => return Ok(Value::Primitive(Primitive::Int(a - b))),
-                    (BinaryOp::Mul, Value::Primitive(Primitive::Int(a)), Value::Primitive(Primitive::Int(b))) => return Ok(Value::Primitive(Primitive::Int(a * b))),
-                    (BinaryOp::Mod, Value::Primitive(Primitive::Int(_)), Value::Primitive(Primitive::Int(b))) if *b == 0 => return Err(Error::DivideByZero),
-                    (BinaryOp::Mod, Value::Primitive(Primitive::Int(a)), Value::Primitive(Primitive::Int(b))) => return Ok(Value::Primitive(Primitive::Int(a % b))),
-                    _ => {}
+                // these operators only ever mean arithmetic, so the policy decides
+                // outright what counts as a number -- and reports whether it found
+                // an integer, which is what lets the result stay one
+                let (ln, rn) = (self.context.to_number(&l)?, self.context.to_number(&r)?);
+                if let (Number::Int(a), Number::Int(b)) = (ln, rn) {
+                    match op {
+                        Sub => return Ok(Value::from(a - b)),
+                        Mul => return Ok(Value::from(a * b)),
+                        Mod if b == 0 => return Err(Error::DivideByZero),
+                        Mod => return Ok(Value::from(a % b)),
+                        // Div and Pow are always float: 5 / 2 is 2.5, not 2
+                        _ => {}
+                    }
                 }
-                let (af, bf) = (l.to_float_lossy(), r.to_float_lossy());
-                if let (Some(a), Some(b)) = (af, bf) {
-                    let res = match op {
-                        Sub => a - b,
-                        Mul => a * b,
-                        Div => {
-                            if b == 0.0 {
-                                return Err(Error::DivideByZero);
-                            }
-                            a / b
+                let (a, b) = (ln.as_f64(), rn.as_f64());
+                let res = match op {
+                    Sub => a - b,
+                    Mul => a * b,
+                    Div => {
+                        if b == 0.0 {
+                            return Err(Error::DivideByZero);
                         }
-                        Mod => {
-                            if b == 0.0 {
-                                return Err(Error::DivideByZero);
-                            }
-                            a % b
+                        a / b
+                    }
+                    Mod => {
+                        if b == 0.0 {
+                            return Err(Error::DivideByZero);
                         }
-                        Pow => a.powf(b),
-                        _ => unreachable!(),
-                    };
-                    Ok(Value::Primitive(Primitive::Float(res)))
-                } else {
-                    Err(Error::TypeMismatch("arithmetic expects numbers".into()))
-                }
+                        a % b
+                    }
+                    Pow => a.powf(b),
+                    _ => unreachable!(),
+                };
+                Ok(Value::from(res))
             }
         }
     }
@@ -280,13 +323,12 @@ mod tests {
                 return Some(Value::from(true));
             }
             if key == "math.add" || key == "add" {
-                let f = function::new(Rc::new(|args: &[Value]| -> Result<Value> {
+                let f = function::new(Rc::new(|args: &[Value], cx: &Context| -> Result<Value> {
                     if args.len() != 2 {
                         return Err(Error::EvaluationFailed("need 2 args".into()));
                     }
-                    let a = args[0].to_float_lossy().ok_or(Error::TypeMismatch("number".into()))?;
-                    let b = args[1].to_float_lossy().ok_or(Error::TypeMismatch("number".into()))?;
-                    Ok(Value::from(a + b))
+                    // goes through the active policy, not a hardcoded conversion
+                    Ok(Value::from(cx.to_number(&args[0])?.as_f64() + cx.to_number(&args[1])?.as_f64()))
                 }));
                 return Some(f);
             }
@@ -307,7 +349,7 @@ mod tests {
         fn get_member(&self, name: &str) -> Result<Value> {
             match name {
                 "a" => Ok(Value::Primitive(Primitive::Str("a".to_string()))),
-                "fun" => Ok(function::new(Rc::new(|_args: &[Value]| -> Result<Value> { Ok(Value::Primitive(Primitive::Str("yes".to_string()))) }))),
+                "fun" => Ok(function::new(Rc::new(|_args: &[Value], _cx: &Context| -> Result<Value> { Ok(Value::Primitive(Primitive::Str("yes".to_string()))) }))),
                 _ => Err(Error::ResolveFailed(name.to_string())),
             }
         }
@@ -496,6 +538,150 @@ mod tests {
         assert_eq!(ev.evaluate(&parser::parse_expression("!![1]").unwrap()).unwrap(), Value::from(true));
         assert_eq!(ev.evaluate(&parser::parse_expression("!{}").unwrap()).unwrap(), Value::from(true));
         assert_eq!(ev.evaluate(&parser::parse_expression("!!{\"a\":1}").unwrap()).unwrap(), Value::from(true));
+    }
+
+    /// Integer operands keep integer results. The .txt corpus cannot catch this,
+    /// because Int(5) and Float(5.0) both display as "5".
+    #[test]
+    fn numeric_tower_preserves_ints() {
+        let resolver = MockResolver::new();
+        let ev = Evaluator::new(&resolver);
+        let eval = |src: &str| ev.evaluate(&parser::parse_expression(src).unwrap()).unwrap();
+
+        assert_eq!(eval("5 - 2"), Value::from(3i64));
+        assert_eq!(eval("2 * 3"), Value::from(6i64));
+        assert_eq!(eval("7 % 3"), Value::from(1i64));
+        assert_eq!(eval("1 + 2"), Value::from(3i64));
+
+        // Div and Pow are always float, even for integer operands
+        assert_eq!(eval("5 / 2"), Value::from(2.5f64));
+        assert_eq!(eval("4 / 2"), Value::from(2.0f64));
+        assert_eq!(eval("2 ^ 3"), Value::from(8.0f64));
+
+        // one float operand promotes the result
+        assert_eq!(eval("2 * 3.0"), Value::from(6.0f64));
+        assert_eq!(eval("5.0 - 2"), Value::from(3.0f64));
+
+        // divide-by-zero still fires on the integer path
+        match ev.evaluate(&parser::parse_expression("1 % 0").unwrap()) {
+            Err(Error::DivideByZero) => (),
+            other => panic!("expected DivideByZero, got {:?}", other),
+        }
+        match ev.evaluate(&parser::parse_expression("1 / 0").unwrap()) {
+            Err(Error::DivideByZero) => (),
+            other => panic!("expected DivideByZero, got {:?}", other),
+        }
+    }
+
+    /// Above 2^53 an i64 does not survive a round trip through f64, so comparing
+    /// two integers must not go through one.
+    #[test]
+    fn large_integers_compare_exactly() {
+        let resolver = MockResolver::new();
+        let ev = Evaluator::new(&resolver);
+        let eval = |src: &str| ev.evaluate(&parser::parse_expression(src).unwrap()).unwrap();
+
+        assert_eq!(eval("9007199254740992 < 9007199254740993"), Value::from(true));
+        assert_eq!(eval("9007199254740993 > 9007199254740992"), Value::from(true));
+        assert_eq!(eval("9007199254740992 >= 9007199254740993"), Value::from(false));
+        // consistent with equality, which was always exact
+        assert_eq!(eval("9007199254740992 == 9007199254740993"), Value::from(false));
+        // mixed int/float comparison still goes through f64
+        assert_eq!(eval("1 < 1.5"), Value::from(true));
+        assert_eq!(eval("2.5 > 2"), Value::from(true));
+    }
+
+    /// Only bools are bools; everything else is a type error.
+    #[test]
+    fn strict_coercions_reject_truthiness() {
+        use crate::types::coerce::StrictCoercions;
+        let resolver = MockResolver::new();
+        let strict = StrictCoercions;
+        let ev = Evaluator::new_with_coercions(&resolver, &strict);
+
+        // standard policy accepts these
+        let std_ev = Evaluator::new(&resolver);
+        assert_eq!(std_ev.evaluate(&parser::parse_expression("1 && true").unwrap()).unwrap(), Value::from(true));
+        assert_eq!(std_ev.evaluate(&parser::parse_expression("![]").unwrap()).unwrap(), Value::from(true));
+
+        // strict policy does not
+        match ev.evaluate(&parser::parse_expression("1 && true").unwrap()) {
+            Err(Error::NotCoercible { type_name, target }) => {
+                assert_eq!(type_name, "number");
+                assert_eq!(target, "bool");
+            }
+            other => panic!("expected NotCoercible, got {:?}", other),
+        }
+        match ev.evaluate(&parser::parse_expression("![]").unwrap()) {
+            Err(Error::NotCoercible { type_name, .. }) => assert_eq!(type_name, "list"),
+            other => panic!("expected NotCoercible, got {:?}", other),
+        }
+        // actual bools still work
+        assert_eq!(ev.evaluate(&parser::parse_expression("true && !false").unwrap()).unwrap(), Value::from(true));
+    }
+
+    /// A custom policy overrides only what it cares about and delegates the rest,
+    /// and the override is visible both to operators and inside function bodies.
+    #[test]
+    fn custom_coercions_reach_function_bodies() {
+        use crate::types::coerce::{Coercions, STANDARD};
+
+        struct NumericStrings;
+        impl Coercions for NumericStrings {
+            fn to_bool(&self, v: &Value) -> Result<bool> {
+                // empty string is false, any other string is true
+                if let Value::Primitive(Primitive::Str(s)) = v {
+                    return Ok(!s.is_empty());
+                }
+                STANDARD.to_bool(v)
+            }
+            fn to_number(&self, v: &Value) -> Result<Number> {
+                if let Value::Primitive(Primitive::Str(s)) = v {
+                    // an integral string stays an integer
+                    if let Ok(i) = s.parse::<i64>() {
+                        return Ok(Number::Int(i));
+                    }
+                    if let Ok(f) = s.parse::<f64>() {
+                        return Ok(Number::Float(f));
+                    }
+                }
+                STANDARD.to_number(v)
+            }
+        }
+
+        let resolver = MockResolver::new();
+        let policy = NumericStrings;
+        let ev = Evaluator::new_with_coercions(&resolver, &policy);
+
+        // truthiness override, used by the '!' operator
+        assert_eq!(ev.evaluate(&parser::parse_expression("!''").unwrap()).unwrap(), Value::from(true));
+        assert_eq!(ev.evaluate(&parser::parse_expression("!'xyz'").unwrap()).unwrap(), Value::from(false));
+        // the standard policy has no opinion on arbitrary strings
+        match Evaluator::new(&resolver).evaluate(&parser::parse_expression("!'xyz'").unwrap()) {
+            Err(Error::NotCoercible { type_name, target }) => {
+                assert_eq!(type_name, "string");
+                assert_eq!(target, "bool");
+            }
+            other => panic!("expected NotCoercible, got {:?}", other),
+        }
+
+        // the number override reaches inside add(), which calls cx.to_number()
+        match ev.evaluate(&parser::parse_expression("add('2', 3)").unwrap()).unwrap() {
+            Value::Primitive(Primitive::Float(f)) => assert!((f - 5.0).abs() < 1e-9),
+            other => panic!("expected float, got {:?}", other),
+        }
+        // ... and the default policy still rejects it
+        match Evaluator::new(&resolver).evaluate(&parser::parse_expression("add('2', 3)").unwrap()) {
+            Err(Error::NotCoercible { target, .. }) => assert_eq!(target, "number"),
+            other => panic!("expected NotCoercible, got {:?}", other),
+        }
+
+        // a policy can yield exact integers, and the operator keeps them
+        assert_eq!(ev.evaluate(&parser::parse_expression("'2' * 3").unwrap()).unwrap(), Value::from(6i64));
+        assert_eq!(ev.evaluate(&parser::parse_expression("'2.5' * 2").unwrap()).unwrap(), Value::from(5.0f64));
+
+        // delegated conversions are unchanged
+        assert_eq!(ev.evaluate(&parser::parse_expression("![]").unwrap()).unwrap(), Value::from(true));
     }
 
     #[test]

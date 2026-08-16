@@ -1,3 +1,4 @@
+use crate::types::coerce::Context;
 use crate::types::error::Result;
 use crate::types::value::Value;
 use std::any::Any;
@@ -28,7 +29,7 @@ pub trait Object: Any {
     fn as_bool(&self) -> Option<bool> {
         None
     }
-    fn call(&self, _args: &[Value]) -> Result<Value> {
+    fn call(&self, _args: &[Value], _cx: &Context) -> Result<Value> {
         Err(crate::types::error::Error::NotCallable)
     }
     fn equals(&self, _other: &Value) -> bool {

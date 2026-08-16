@@ -1,3 +1,4 @@
+use crate::types::coerce::Context;
 use crate::types::error::{Error, Result};
 use crate::types::object::Object;
 use crate::types::primitive::Primitive;
@@ -36,15 +37,15 @@ impl Object for DictObject {
             "length" => Ok(Value::from(self.map.len() as i64)),
             "keys" => {
                 let keys: Vec<Value> = self.map.keys().cloned().map(Value::from).collect();
-                Ok(function::method0(move || Ok(list::new(keys.clone()))))
+                Ok(function::method0(move |_cx| Ok(list::new(keys.clone()))))
             }
             "values" => {
                 let vals: Vec<Value> = self.map.values().cloned().collect();
-                Ok(method0(move || Ok(list::new(vals.clone()))))
+                Ok(method0(move |_cx| Ok(list::new(vals.clone()))))
             }
             "contains" => {
                 let base = self.map.clone();
-                Ok(function::method1(move |arg: &Value| {
+                Ok(function::method1(move |arg: &Value, _cx: &Context| {
                     if let Value::Primitive(Primitive::Str(s)) = arg {
                         Ok(Value::from(base.contains_key(s)))
                     } else {
@@ -54,7 +55,7 @@ impl Object for DictObject {
             }
             "get" => {
                 let base = self.map.clone();
-                Ok(function::new(std::rc::Rc::new(move |args: &[Value]| {
+                Ok(function::new(std::rc::Rc::new(move |args: &[Value], _cx: &Context| {
                     if args.len() != 2 {
                         return Err(Error::EvaluationFailed("expected 2 args".into()));
                     }

@@ -8,6 +8,8 @@ pub enum Error {
     NotCallable,
     #[error("type mismatch: {0}")]
     TypeMismatch(String),
+    #[error("cannot use {type_name} as {target}")]
+    NotCoercible { type_name: String, target: &'static str },
     #[error("divide by zero")]
     DivideByZero,
     #[error("evaluation failed: {0}")]
