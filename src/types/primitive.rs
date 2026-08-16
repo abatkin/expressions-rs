@@ -9,36 +9,9 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    pub fn as_bool(&self) -> Option<bool> {
-        self.coerce_bool()
-    }
-    pub fn as_int(&self) -> Option<i64> {
-        if let Primitive::Int(i) = self { Some(*i) } else { None }
-    }
-    pub fn as_float(&self) -> Option<f64> {
-        if let Primitive::Float(f) = self { Some(*f) } else { None }
-    }
-    pub fn as_str(&self) -> String {
-        self.as_str_lossy()
-    }
-
-    // Newer, explicit coercions
-    pub fn coerce_bool(&self) -> Option<bool> {
-        match self {
-            Primitive::Int(i) => Some(*i != 0),
-            Primitive::Float(f) => Some(*f != 0.0),
-            Primitive::Str(s) if s == "true" || s == "false" => Some(s == "true"),
-            Primitive::Bool(b) => Some(*b),
-            _ => None,
-        }
-    }
-    pub fn to_float_lossy(&self) -> Option<f64> {
-        match self {
-            Primitive::Float(f) => Some(*f),
-            Primitive::Int(i) => Some(*i as f64),
-            _ => None,
-        }
-    }
+    /// Rendering for humans. This is formatting, not coercion: it never fails,
+    /// and it is deliberately not something a [`Coercions`](crate::types::coerce::Coercions)
+    /// policy can influence.
     pub fn as_str_lossy(&self) -> String {
         match self {
             Primitive::Str(s) => s.clone(),

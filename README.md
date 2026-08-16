@@ -35,12 +35,22 @@ A small expression language with variables, function calls, simple types and com
   - Notes:
     - '+' supports number addition and string concatenation.
     - Comparisons work on numbers (with int/float coercion) or on strings. Other mixes are errors.
+    - Arithmetic on two integers stays an integer, except for '/' and '^', which always produce a float (5 / 2 is 2.5).
+    - '==' and '!=' do not coerce: an integer never equals a float, and a string never equals a number.
 - Truthiness (used by !, &&, ||)
+  - These are the rules of the default coercion policy; see "Custom coercions" below to change them.
   - Numbers: 0/0.0 is false; any other number is true.
   - Booleans: as-is.
   - Strings: only the literal strings "true" and "false" coerce to booleans; other strings are not allowed in logical ops.
   - Lists/Dicts: empty is false; non-empty is true.
   - Functions: not coercible to bool.
+- Custom coercions (library API)
+  - Truthiness and "what counts as a number" are decided by a `Coercions` policy rather than being fixed in the language.
+  - `StandardCoercions` (the default) implements the rules above; `StrictCoercions` accepts only real bools and real numbers.
+  - Pass your own with `evaluate_with(...)`, `evaluate_interpolations_with(...)`, or `Evaluator::new_with_coercions(...)`.
+  - The policy reaches into function bodies too: a function receives a `Context` and should convert arguments with `cx.to_bool(v)` / `cx.to_number(v)` rather than matching on `Value` directly, so it agrees with the operators.
+  - `to_number` reports whether it found an integer or a float, so integer operands can produce integer results.
+  - Turning values into text is deliberately not part of the policy; that is formatting, and it goes through `Display`.
 - String interpolation (library API)
   - When using the provided Evaluator, evaluate_interpolated replaces ${ ... } segments with the value of the contained expression. The result is always a string.
   - Example: evaluating "Hello ${1 + 2}" yields "Hello 3". Braces inside quoted strings are handled; a missing closing '}' is an error.

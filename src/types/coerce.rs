@@ -12,10 +12,21 @@ use crate::types::value::Value;
 /// A policy that only cares about one conversion should delegate the rest to
 /// [`STANDARD`]:
 ///
-/// ```ignore
-/// impl Coercions for MyPolicy {
-///     fn to_bool(&self, v: &Value) -> Result<bool> { /* custom rules */ }
-///     fn to_number(&self, v: &Value) -> Result<f64> { STANDARD.to_number(v) }
+/// ```
+/// use simple_expressions::types::coerce::{Coercions, Number, STANDARD};
+/// use simple_expressions::types::error::Result;
+/// use simple_expressions::types::value::Value;
+///
+/// /// Every value is usable as a bool; numbers keep the standard rules.
+/// struct EverythingIsTruthy;
+///
+/// impl Coercions for EverythingIsTruthy {
+///     fn to_bool(&self, v: &Value) -> Result<bool> {
+///         Ok(STANDARD.to_bool(v).unwrap_or(true))
+///     }
+///     fn to_number(&self, v: &Value) -> Result<Number> {
+///         STANDARD.to_number(v)
+///     }
 /// }
 /// ```
 ///
@@ -58,10 +69,7 @@ impl From<Number> for Value {
 }
 
 fn not_coercible(v: &Value, target: &'static str) -> Error {
-    Error::NotCoercible {
-        type_name: v.type_name().into(),
-        target,
-    }
+    Error::NotCoercible { type_name: v.type_name().into(), target }
 }
 
 /// The default policy, matching the language's built-in behavior.
@@ -73,7 +81,11 @@ pub static STANDARD: StandardCoercions = StandardCoercions;
 impl Coercions for StandardCoercions {
     fn to_bool(&self, v: &Value) -> Result<bool> {
         let b = match v {
-            Value::Primitive(p) => p.coerce_bool(),
+            Value::Primitive(Primitive::Bool(b)) => Some(*b),
+            Value::Primitive(Primitive::Int(i)) => Some(*i != 0),
+            Value::Primitive(Primitive::Float(f)) => Some(*f != 0.0),
+            Value::Primitive(Primitive::Str(s)) if s == "true" || s == "false" => Some(s == "true"),
+            Value::Primitive(Primitive::Str(_)) => None,
             Value::Object(obj) => obj.as_bool(),
         };
         b.ok_or_else(|| not_coercible(v, "bool"))
@@ -110,10 +122,6 @@ impl<'a> Context<'a> {
     /// A context using [`STANDARD`].
     pub fn standard() -> Context<'static> {
         Context { coercions: &STANDARD }
-    }
-
-    pub fn coercions(&self) -> &'a dyn Coercions {
-        self.coercions
     }
 
     pub fn to_bool(&self, v: &Value) -> Result<bool> {

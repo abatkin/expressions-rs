@@ -16,10 +16,6 @@ pub enum Error {
     EvaluationFailed(String),
     #[error("index out of bounds: {index} (len: {len})")]
     IndexOutOfBounds { index: i64, len: usize },
-    #[error("{target}: {message}")]
-    WrongIndexType { target: &'static str, message: String },
-    #[error("not a dict")]
-    NotADict,
     #[error("not indexable: {0}")]
     NotIndexable(String),
     #[error("no such key: {0}")]

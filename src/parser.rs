@@ -107,23 +107,20 @@ fn parse_unary(pair: Pair<Rule>) -> Result<Expr> {
             let mut ops: Vec<UnaryOp> = Vec::new();
             let mut inner = pair.into_inner();
             // Collect zero or more unary_op then the postfix expression
-            loop {
-                let Some(next) = inner.peek() else { break };
-                match next.as_rule() {
-                    Rule::unary_op => {
-                        let op_pair = inner.next().unwrap();
-                        let op_inner = op_pair.into_inner().next().unwrap();
-                        let op = match op_inner.as_rule() {
-                            Rule::not_op => UnaryOp::Not,
-                            Rule::neg_op => UnaryOp::Neg,
-                            r => {
-                                return Err(Error::InternalParserError(format!("unexpected unary op: {:?}", r)));
-                            }
-                        };
-                        ops.push(op);
-                    }
-                    _ => break,
+            while let Some(next) = inner.peek() {
+                if !matches!(next.as_rule(), Rule::unary_op) {
+                    break;
                 }
+                let op_pair = inner.next().unwrap();
+                let op_inner = op_pair.into_inner().next().unwrap();
+                let op = match op_inner.as_rule() {
+                    Rule::not_op => UnaryOp::Not,
+                    Rule::neg_op => UnaryOp::Neg,
+                    r => {
+                        return Err(Error::InternalParserError(format!("unexpected unary op: {:?}", r)));
+                    }
+                };
+                ops.push(op);
             }
             let post = inner.next().expect("unary must end with postfix");
             let mut expr = parse_postfix(post)?;

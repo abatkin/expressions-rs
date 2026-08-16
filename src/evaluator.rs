@@ -46,6 +46,30 @@ pub trait VariableResolver {
     fn resolve(&self, name: &str) -> Option<Value>;
 }
 
+/// The standard notion of "this value is a number".
+///
+/// Used by the operators that overload on type -- comparison and `+` -- where a
+/// non-number selects the string form of the operator rather than being an
+/// error. That dispatch is fixed language behavior, so it asks [`STANDARD`]
+/// rather than the active policy; letting a policy answer here would silently
+/// redefine what `+` means. Arithmetic proper does go through the policy.
+///
+/// Returns the [`Number`] rather than an `f64` so that callers can keep integer
+/// operands exact.
+fn standard_number(v: &Value) -> Option<Number> {
+    STANDARD.to_number(v).ok()
+}
+
+/// Compare two numbers, exactly when both are integers. Routing an `i64` through
+/// `f64` loses precision above 2^53, which otherwise makes '<' disagree with '=='.
+/// `None` means unordered, i.e. one side is NaN.
+fn compare_numbers(a: Number, b: Number) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (Number::Int(a), Number::Int(b)) => Some(a.cmp(&b)),
+        (a, b) => a.as_f64().partial_cmp(&b.as_f64()),
+    }
+}
+
 pub struct Evaluator<'a, R: VariableResolver> {
     resolver: &'a R,
     context: Context<'a>,
@@ -53,17 +77,11 @@ pub struct Evaluator<'a, R: VariableResolver> {
 
 impl<'a, R: VariableResolver> Evaluator<'a, R> {
     pub fn new(resolver: &'a R) -> Self {
-        Self {
-            resolver,
-            context: Context::new(&STANDARD),
-        }
+        Self { resolver, context: Context::new(&STANDARD) }
     }
 
     pub fn new_with_coercions(resolver: &'a R, coercions: &'a dyn Coercions) -> Self {
-        Self {
-            resolver,
-            context: Context::new(coercions),
-        }
+        Self { resolver, context: Context::new(coercions) }
     }
 
     pub fn evaluate(&self, expr: &Expr) -> Result<Value> {
@@ -111,15 +129,7 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                             Err(Error::NotIndexable(idx_v.as_str_lossy()))
                         }
                     }
-                    other => {
-                        let t = match other {
-                            Value::Primitive(Primitive::Int(_)) | Value::Primitive(Primitive::Float(_)) => "number",
-                            Value::Primitive(Primitive::Str(_)) => "string",
-                            Value::Primitive(Primitive::Bool(_)) => "bool",
-                            Value::Object(obj) => obj.type_name(),
-                        };
-                        Err(Error::NotIndexable(t.into()))
-                    }
+                    other => Err(Error::NotIndexable(other.type_name().into())),
                 }
             }
             Expr::Unary { op, expr } => {
@@ -129,14 +139,13 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                         let b = self.context.to_bool(&v)?;
                         Ok(Value::Primitive(Primitive::Bool(!b)))
                     }
-                    UnaryOp::Neg => {
-                        let v = self.evaluate(expr)?;
-                        match v {
-                            Value::Primitive(Primitive::Int(i)) => Ok(Value::Primitive(Primitive::Int(-i))),
-                            Value::Primitive(Primitive::Float(f)) => Ok(Value::Primitive(Primitive::Float(-f))),
-                            _ => Err(Error::TypeMismatch("'-' expects number".into())),
-                        }
-                    }
+                    // '-' only ever means negation -- there is no other operator to
+                    // fall back to -- so like the rest of arithmetic it asks the
+                    // policy, and keeps an integer operand exact
+                    UnaryOp::Neg => match self.context.to_number(&v)? {
+                        Number::Int(i) => Ok(Value::from(-i)),
+                        Number::Float(f) => Ok(Value::from(-f)),
+                    },
                 }
             }
             Expr::Binary { op, left, right } => self.eval_binary(*op, left, right),
@@ -200,28 +209,20 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
             Lt | Le | Gt | Ge => {
                 let l = self.evaluate(left)?;
                 let r = self.evaluate(right)?;
-                // two integers compare exactly: i64 -> f64 loses precision above 2^53,
-                // which otherwise makes '<' disagree with '=='
-                if let (Value::Primitive(Primitive::Int(a)), Value::Primitive(Primitive::Int(b))) = (&l, &r) {
-                    let res = match op {
-                        Lt => a < b,
-                        Le => a <= b,
-                        Gt => a > b,
-                        Ge => a >= b,
-                        _ => unreachable!(),
-                    };
-                    return Ok(Value::Primitive(Primitive::Bool(res)));
-                }
-                // NOTE: deliberately not routed through the coercion policy. "Is it a
-                // number?" is the operator's dispatch test here, not a conversion --
-                // failing it selects string comparison instead. See Add, below.
-                if let (Some(a), Some(b)) = (l.to_float_lossy(), r.to_float_lossy()) {
-                    let res = match op {
-                        Lt => a < b,
-                        Le => a <= b,
-                        Gt => a > b,
-                        Ge => a >= b,
-                        _ => unreachable!(),
+                // NOTE: STANDARD, not the active policy. "Is it a number?" is the
+                // operator's dispatch test here, not a conversion -- failing it selects
+                // string comparison instead. See Add, below.
+                if let (Some(a), Some(b)) = (standard_number(&l), standard_number(&r)) {
+                    let res = match compare_numbers(a, b) {
+                        Some(ord) => match op {
+                            Lt => ord.is_lt(),
+                            Le => ord.is_le(),
+                            Gt => ord.is_gt(),
+                            Ge => ord.is_ge(),
+                            _ => unreachable!(),
+                        },
+                        // NaN is unordered: every comparison against it is false
+                        None => false,
                     };
                     return Ok(Value::Primitive(Primitive::Bool(res)));
                 }
@@ -240,16 +241,15 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
             Add => {
                 let l = self.evaluate(left)?;
                 let r = self.evaluate(right)?;
-                match (&l, &r) {
-                    (Value::Primitive(Primitive::Int(a)), Value::Primitive(Primitive::Int(b))) => Ok(Value::Primitive(Primitive::Int(a + b))),
+                // NOTE: STANDARD here too. A policy that read strings as numbers
+                // would silently turn '"2" + "3"' from "23" into 5 -- an
+                // operator-dispatch change, not a coercion.
+                match (standard_number(&l), standard_number(&r)) {
+                    // once dispatch has settled on arithmetic, integers stay integers
+                    (Some(Number::Int(a)), Some(Number::Int(b))) => Ok(Value::from(a + b)),
+                    (Some(a), Some(b)) => Ok(Value::from(a.as_f64() + b.as_f64())),
                     _ => {
-                        // NOTE: not routed through the coercion policy either. A policy
-                        // that read strings as numbers would silently turn '"2" + "3"'
-                        // from "23" into 5 -- an operator-dispatch change, not a coercion.
-                        let (af, bf) = (l.to_float_lossy(), r.to_float_lossy());
-                        if let (Some(af), Some(bf)) = (af, bf) {
-                            Ok(Value::Primitive(Primitive::Float(af + bf)))
-                        } else if let (Value::Primitive(Primitive::Str(as_)), Value::Primitive(Primitive::Str(bs_))) = (&l, &r) {
+                        if let (Value::Primitive(Primitive::Str(as_)), Value::Primitive(Primitive::Str(bs_))) = (&l, &r) {
                             Ok(Value::Primitive(Primitive::Str(format!("{}{}", as_, bs_))))
                         } else {
                             Err(Error::TypeMismatch("'+' expects numbers or strings".into()))
@@ -335,7 +335,34 @@ mod tests {
             if key == "global" {
                 return Some(Value::Object(Rc::new(MockGlobal {})));
             }
+            if key == "epoch" {
+                return Some(Value::Object(Rc::new(IntOnly(100))));
+            }
+            if key == "big" {
+                return Some(Value::Object(Rc::new(IntOnly(9007199254740992))));
+            }
+            if key == "bigger" {
+                return Some(Value::Object(Rc::new(IntOnly(9007199254740993))));
+            }
             None
+        }
+    }
+
+    /// An object that reports an integer and nothing else, like a timestamp.
+    struct IntOnly(i64);
+
+    impl Object for IntOnly {
+        fn type_name(&self) -> &'static str {
+            "int_only"
+        }
+        fn as_int(&self) -> Option<i64> {
+            Some(self.0)
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
         }
     }
 
@@ -540,6 +567,64 @@ mod tests {
         assert_eq!(ev.evaluate(&parser::parse_expression("!!{\"a\":1}").unwrap()).unwrap(), Value::from(true));
     }
 
+    /// Every operator agrees on what a number is. An object reporting only
+    /// `as_int` used to work in arithmetic but not in comparison or '+', because
+    /// those went through a second, subtly different definition.
+    #[test]
+    fn operators_agree_on_what_is_a_number() {
+        let resolver = MockResolver::new();
+        let ev = Evaluator::new(&resolver);
+        let eval = |src: &str| ev.evaluate(&parser::parse_expression(src).unwrap()).unwrap();
+
+        // arithmetic, and the integer survives
+        assert_eq!(eval("epoch * 2"), Value::from(200i64));
+        assert_eq!(eval("epoch - 1"), Value::from(99i64));
+        // unary negation, same rule
+        assert_eq!(eval("-epoch"), Value::from(-100i64));
+        // comparison
+        assert_eq!(eval("epoch < 200"), Value::from(true));
+        assert_eq!(eval("epoch >= 100"), Value::from(true));
+        // '+' overload picks the numeric branch, and stays integral there too
+        assert_eq!(eval("epoch + 1"), Value::from(101i64));
+        // ... but string concatenation is still reachable
+        assert_eq!(eval("'a' + 'b'"), Value::from("ab"));
+
+        // object-backed integers compare exactly, not via f64
+        assert_eq!(eval("big < bigger"), Value::from(true));
+        assert_eq!(eval("bigger > big"), Value::from(true));
+        assert_eq!(eval("big >= bigger"), Value::from(false));
+    }
+
+    /// Unary '-' used to evaluate its operand a second time, so a side-effecting
+    /// or expensive call underneath it ran twice.
+    #[test]
+    fn unary_operators_evaluate_their_operand_once() {
+        struct Counting {
+            hits: std::cell::Cell<u32>,
+        }
+        impl VariableResolver for Counting {
+            fn resolve(&self, name: &str) -> Option<Value> {
+                if name == "x" {
+                    self.hits.set(self.hits.get() + 1);
+                    return Some(Value::from(5i64));
+                }
+                None
+            }
+        }
+        let check = |src: &str, expected: Value, expected_hits: u32| {
+            let r = Counting { hits: std::cell::Cell::new(0) };
+            let ev = Evaluator::new(&r);
+            assert_eq!(ev.evaluate(&parser::parse_expression(src).unwrap()).unwrap(), expected, "value of '{}'", src);
+            assert_eq!(r.hits.get(), expected_hits, "resolver hits for '{}'", src);
+        };
+
+        check("x", Value::from(5i64), 1);
+        check("-x", Value::from(-5i64), 1);
+        check("-(x + x)", Value::from(-10i64), 2);
+        check("!x", Value::from(false), 1);
+        check("!!x", Value::from(true), 1);
+    }
+
     /// Integer operands keep integer results. The .txt corpus cannot catch this,
     /// because Int(5) and Float(5.0) both display as "5".
     #[test]
@@ -679,6 +764,14 @@ mod tests {
         // a policy can yield exact integers, and the operator keeps them
         assert_eq!(ev.evaluate(&parser::parse_expression("'2' * 3").unwrap()).unwrap(), Value::from(6i64));
         assert_eq!(ev.evaluate(&parser::parse_expression("'2.5' * 2").unwrap()).unwrap(), Value::from(5.0f64));
+        // unary negation goes through the policy as well
+        assert_eq!(ev.evaluate(&parser::parse_expression("-'2'").unwrap()).unwrap(), Value::from(-2i64));
+        match Evaluator::new(&resolver).evaluate(&parser::parse_expression("-'2'").unwrap()) {
+            Err(Error::NotCoercible { target, .. }) => assert_eq!(target, "number"),
+            other => panic!("expected NotCoercible, got {:?}", other),
+        }
+        // '+' still concatenates strings even under a numeric-string policy
+        assert_eq!(ev.evaluate(&parser::parse_expression("'2' + '3'").unwrap()).unwrap(), Value::from("23"));
 
         // delegated conversions are unchanged
         assert_eq!(ev.evaluate(&parser::parse_expression("![]").unwrap()).unwrap(), Value::from(true));
