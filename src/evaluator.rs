@@ -30,7 +30,12 @@ pub fn evaluate_interpolations_with<T: VariableResolver>(input: &str, resolver: 
         // copy literal part before the interpolation
         out.push_str(&rest[..idx]);
         let after = &rest[idx + 2..];
-        let (expr, consumed) = parser::parse_internal(after, parser::Rule::delimited_expr)?;
+        // `rest` is always a suffix of `input`, so this is where `after` begins in
+        // the string the user wrote. Without it, a parse error inside `${...}`
+        // would report its position relative to `after` and point at the wrong
+        // place -- earlier, and on the wrong line entirely for multi-line input.
+        let start = input.len() - rest.len() + idx + 2;
+        let (expr, consumed) = parser::parse_internal(parser::Origin::fragment(input, start), parser::Rule::delimited_expr)?;
         let evaluator = Evaluator::new_with_coercions(resolver, coercions);
         let result = evaluator.evaluate(&expr).map_err(|e| Error::EvaluationFailed(format!("evaluation error: {}", e)))?;
         let result_str = result.to_string();
@@ -788,5 +793,44 @@ mod tests {
         assert_eq!(evaluate_interpolations("x${[1,2,3][1]}y", &resolver).unwrap(), "x2y");
         assert_eq!(evaluate_interpolations("x${{'foo': 'bar', 'baz': 'bam'}['foo']}y", &resolver).unwrap(), "xbary");
         assert_eq!(evaluate_interpolations("x${{\"foo\": \"bar\", \"baz\": \"bam\"}[\"foo\"]}y", &resolver).unwrap(), "xbary");
+    }
+
+    /// `(line, column, offset)` of the parse error for `input`.
+    fn interpolation_failure(input: &str) -> (usize, usize, usize) {
+        match evaluate_interpolations(input, &MockResolver::new()).unwrap_err() {
+            Error::ParseError { line, column, offset, .. } => (line, column, offset),
+            other => panic!("expected a parse error, got: {:?}", other),
+        }
+    }
+
+    /// An interpolated expression is parsed from a slice starting mid-string, so
+    /// its positions have to be shifted back onto the input the caller passed.
+    #[test]
+    fn interpolation_errors_point_into_the_original_input() {
+        // ...........................0123456789012345678
+        assert_eq!(interpolation_failure("aaaaaaaaaa ${1 + + }"), (1, 18, 17));
+    }
+
+    /// The shift is a byte offset, so the line has to be recounted rather than
+    /// having the offset added to the column pest reported.
+    #[test]
+    fn interpolation_errors_survive_earlier_lines() {
+        assert_eq!(interpolation_failure("line one\nline two ${1 + + }\n"), (2, 16, 24));
+    }
+
+    /// The offset accumulates across segments already consumed.
+    #[test]
+    fn interpolation_errors_account_for_earlier_segments() {
+        // ...........................0123456789012345678
+        assert_eq!(interpolation_failure("${1} and ${2 * * }"), (1, 16, 15));
+    }
+
+    /// The rendered diagram shows the caller's line, not the slice being parsed.
+    #[test]
+    fn interpolation_errors_render_the_original_line() {
+        let Error::ParseError { rendered, .. } = evaluate_interpolations("aaaaaaaaaa ${1 + + }", &MockResolver::new()).unwrap_err() else {
+            panic!("expected a parse error");
+        };
+        assert!(rendered.contains("1 | aaaaaaaaaa ${1 + + }"), "{}", rendered);
     }
 }

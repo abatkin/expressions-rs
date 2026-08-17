@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     #[error("unable to resolve variable: {0:?}")]
     ResolveFailed(String),
@@ -22,8 +23,20 @@ pub enum Error {
     NoSuchKey(String),
     #[error("unknown member '{member}' for type {type_name}")]
     UnknownMember { type_name: String, member: String },
-    #[error("parse error: {0}")]
-    ParseError(String),
+    /// Positions are into the whole string handed to the entry point, so they stay
+    /// meaningful for an expression interpolated into some larger text.
+    #[error("parse error at line {line}, column {column}: {message}")]
+    ParseError {
+        /// 1-based.
+        line: usize,
+        /// 1-based, in characters.
+        column: usize,
+        /// 0-based byte offset, for callers that want to slice the input.
+        offset: usize,
+        message: String,
+        /// The offending line with a caret under `column`.
+        rendered: String,
+    },
     #[error("internal parse error: {0}")]
     InternalParserError(String),
 }

@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.4.0 Structured parse errors, custom coercion
+
 ## 0.3.0 Move from chumsky to pest for the parser
 
 ## 0.2.1 Add generic "Object" type

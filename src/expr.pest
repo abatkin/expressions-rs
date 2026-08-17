@@ -1,5 +1,10 @@
 WHITESPACE = _{ " " | "\t" | NEWLINE }
-NEWLINE     = _{ "\r\n" | "\n" | "\r" }
+// Deliberately narrower than pest's builtin NEWLINE, which also accepts a lone
+// "\r": pest counts lines by "\n" and "\r\n" only, so accepting a lone "\r" would
+// mean the line and column reported in an error disagreed with the line the
+// parser thinks it is on. This definition shadows the builtin -- removing it does
+// not fall back to something equivalent.
+NEWLINE     = _{ "\r\n" | "\n" }
 COMMENT     = _{ "//" ~ (!NEWLINE ~ ANY)* }
 
 program        = { SOI ~ expr ~ EOI }
