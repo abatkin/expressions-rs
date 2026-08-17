@@ -486,6 +486,31 @@ mod tests {
         assert!(message.starts_with("integer literal out of range"), "{}", message);
     }
 
+    /// `primary` tries `boolean` before `ident`, so the boolean literals need a
+    /// trailing word boundary or every identifier starting with one of them is a
+    /// parse error.
+    #[test]
+    fn identifiers_may_start_with_a_boolean_literal() {
+        for name in ["trueish", "true_", "true1", "falsey", "false_value", "false2"] {
+            let expr = parse_expression(name).unwrap_or_else(|e| panic!("{:?}: {}", name, e));
+            assert_eq!(expr, Expr::Var(name.to_string()), "input: {:?}", name);
+        }
+
+        // and the literals themselves still parse as literals
+        assert_eq!(parse_expression("true").unwrap(), Expr::Literal(Primitive::Bool(true)));
+        assert_eq!(parse_expression("false").unwrap(), Expr::Literal(Primitive::Bool(false)));
+        assert_eq!(parse_expression("(true)").unwrap(), Expr::Literal(Primitive::Bool(true)));
+
+        // a boundary that is not alphanumeric still ends the literal
+        assert_eq!(
+            parse_expression("true.length").unwrap(),
+            Expr::Member {
+                object: Box::new(Expr::Literal(Primitive::Bool(true))),
+                field: "length".to_string(),
+            }
+        );
+    }
+
     #[test]
     fn unknown_escape_points_at_the_backslash() {
         let (line, column, offset, message) = parse_failure(r"'a\tb'");

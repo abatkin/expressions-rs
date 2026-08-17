@@ -33,6 +33,11 @@ true || !true => true
 
 x => 10
 truth || false => true
+
+# a boolean literal is only a literal when it is a whole word
+trueish => 1
+false_value => 2
+trueish + false_value => 3
 add(2, 3) => 5
 
 "1" + "1" => 11

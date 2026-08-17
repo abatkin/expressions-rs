@@ -13,6 +13,13 @@ pub enum Error {
     NotCoercible { type_name: String, target: &'static str },
     #[error("divide by zero")]
     DivideByZero,
+    /// Integer arithmetic that does not fit in an `i64`. Reported rather than
+    /// wrapped, so a result is never silently wrong.
+    #[error("integer overflow in '{op}'")]
+    IntegerOverflow {
+        /// The operator that overflowed, as written in the source.
+        op: &'static str,
+    },
     #[error("evaluation failed: {0}")]
     EvaluationFailed(String),
     #[error("index out of bounds: {index} (len: {len})")]

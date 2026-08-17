@@ -37,9 +37,15 @@ float       = @{
 }
 exponent    = @{ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+ }
 
+// A keyword is only a keyword as a whole word. `primary` tries `boolean` before
+// `ident`, so without the trailing lookahead "trueish" would match the literal
+// `true` and then leave "ish" for a parser that has nowhere to put it. pest has
+// no word-boundary builtin, so the boundary is spelled as "not continuable as an
+// identifier" -- which is what it actually means, and is why it is `ident_cont`
+// and not a private copy of the same character class.
 boolean     = { true_kw | false_kw }
-true_kw     = @{ "true" }
-false_kw    = @{ "false" }
+true_kw     = @{ "true" ~ !ident_cont }
+false_kw    = @{ "false" ~ !ident_cont }
 
 string        = { PUSH( "\"" | "'" ) ~ string_char* ~ POP }
 string_char   = @{ quoted_escape | (!(PEEK | NEWLINE) ~ ANY) }
@@ -61,4 +67,10 @@ op_eq       = @{ "==" | "!=" }
 op_cmp      = @{ "<=" | ">=" | "<" | ">" }
 
 // Identifiers
-ident       = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+// `ident_cont` is the single definition of "character that continues a word": it
+// is both what an identifier is made of and what a keyword must not be followed
+// by. Widening it (to `XID_CONTINUE`, say) has to move both together, so they
+// stay defined here rather than inline at each use.
+ident       = @{ ident_start ~ ident_cont* }
+ident_start = _{ ASCII_ALPHA | "_" }
+ident_cont  = _{ ASCII_ALPHANUMERIC | "_" }

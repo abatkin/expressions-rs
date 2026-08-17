@@ -148,7 +148,8 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                     // fall back to -- so like the rest of arithmetic it asks the
                     // policy, and keeps an integer operand exact
                     UnaryOp::Neg => match self.context.to_number(&v)? {
-                        Number::Int(i) => Ok(Value::from(-i)),
+                        // i64::MIN has no positive counterpart
+                        Number::Int(i) => Ok(Value::from(i.checked_neg().ok_or(Error::IntegerOverflow { op: "-" })?)),
                         Number::Float(f) => Ok(Value::from(-f)),
                     },
                 }
@@ -251,7 +252,7 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                 // operator-dispatch change, not a coercion.
                 match (standard_number(&l), standard_number(&r)) {
                     // once dispatch has settled on arithmetic, integers stay integers
-                    (Some(Number::Int(a)), Some(Number::Int(b))) => Ok(Value::from(a + b)),
+                    (Some(Number::Int(a)), Some(Number::Int(b))) => Ok(Value::from(a.checked_add(b).ok_or(Error::IntegerOverflow { op: "+" })?)),
                     (Some(a), Some(b)) => Ok(Value::from(a.as_f64() + b.as_f64())),
                     _ => {
                         if let (Value::Primitive(Primitive::Str(as_)), Value::Primitive(Primitive::Str(bs_))) = (&l, &r) {
@@ -271,10 +272,13 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                 let (ln, rn) = (self.context.to_number(&l)?, self.context.to_number(&r)?);
                 if let (Number::Int(a), Number::Int(b)) = (ln, rn) {
                     match op {
-                        Sub => return Ok(Value::from(a - b)),
-                        Mul => return Ok(Value::from(a * b)),
+                        Sub => return Ok(Value::from(a.checked_sub(b).ok_or(Error::IntegerOverflow { op: "-" })?)),
+                        Mul => return Ok(Value::from(a.checked_mul(b).ok_or(Error::IntegerOverflow { op: "*" })?)),
                         Mod if b == 0 => return Err(Error::DivideByZero),
-                        Mod => return Ok(Value::from(a % b)),
+                        // i64::MIN % -1 is mathematically 0, but Rust treats it as
+                        // overflow (it checks against the quotient) and panics in
+                        // every profile, so it has to go through checked_rem too
+                        Mod => return Ok(Value::from(a.checked_rem(b).ok_or(Error::IntegerOverflow { op: "%" })?)),
                         // Div and Pow are always float: 5 / 2 is 2.5, not 2
                         _ => {}
                     }
@@ -326,6 +330,14 @@ mod tests {
             }
             if key == "truth" {
                 return Some(Value::from(true));
+            }
+            // names that a boolean literal is a prefix of: legal identifiers, and
+            // only reachable because the literals carry a word boundary
+            if key == "trueish" {
+                return Some(Value::from(1i64));
+            }
+            if key == "false_value" {
+                return Some(Value::from(2i64));
             }
             if key == "math.add" || key == "add" {
                 let f = function::new(Rc::new(|args: &[Value], cx: &Context| -> Result<Value> {
@@ -661,6 +673,44 @@ mod tests {
             Err(Error::DivideByZero) => (),
             other => panic!("expected DivideByZero, got {:?}", other),
         }
+    }
+
+    /// Integer arithmetic that leaves the i64 range is an error, not a panic and
+    /// not a wrapped result. Without `checked_*`, `+ - *` abort in debug and wrap
+    /// silently in release, and `%` aborts in *both* -- Rust checks remainder
+    /// overflow regardless of `overflow-checks`.
+    #[test]
+    fn integer_overflow_is_an_error() {
+        let resolver = MockResolver::new();
+        let ev = Evaluator::new(&resolver);
+        // i64::MIN, which is not writable as a literal: '-' is a unary operator here
+        // and its operand would be one past i64::MAX.
+        let min = "(-9223372036854775807 - 1)";
+
+        for (src, expected_op) in [
+            ("9223372036854775807 + 1".to_string(), "+"),
+            (format!("{} + -1", min), "+"),
+            (format!("{} - 1", min), "-"),
+            ("9223372036854775807 * 2".to_string(), "*"),
+            (format!("{} % -1", min), "%"),
+            (format!("-{}", min), "-"),
+        ] {
+            match ev.evaluate(&parser::parse_expression(&src).unwrap()) {
+                Err(Error::IntegerOverflow { op }) => assert_eq!(op, expected_op, "input: {}", src),
+                other => panic!("expected IntegerOverflow for {:?}, got {:?}", src, other),
+            }
+        }
+
+        // the same operations well inside the range are untouched, including the
+        // i64::MIN edge cases that do have an answer
+        let eval = |src: &str| ev.evaluate(&parser::parse_expression(src).unwrap()).unwrap();
+        assert_eq!(eval(&format!("{} % 2", min)), Value::from(0i64));
+        assert_eq!(eval(&format!("{} + 1", min)), Value::from(-9223372036854775807i64));
+        assert_eq!(eval("9223372036854775806 + 1"), Value::from(i64::MAX));
+
+        // floats saturate to infinity rather than erroring -- that is IEEE 754, not
+        // an integer overflow
+        assert_eq!(eval("1e308 * 10.0"), Value::from(f64::INFINITY));
     }
 
     /// Above 2^53 an i64 does not survive a round trip through f64, so comparing

@@ -19,7 +19,7 @@ A small expression language with variables, function calls, simple types and com
 - Grouping
   - Parentheses ( ... ) group sub-expressions.
 - Identifiers, variables and functions
-  - Identifiers follow the usual rules: start with a letter or underscore, then letters, digits, or underscores.
+  - Identifiers follow the usual rules: start with a letter or underscore, then letters, digits, or underscores. A keyword is only a keyword as a whole word, so `trueish` and `false_value` are ordinary variable names.
   - Postfix chaining after any primary expression:
     - Member access: .field
     - Indexing: [expr]
@@ -36,6 +36,7 @@ A small expression language with variables, function calls, simple types and com
     - '+' supports number addition and string concatenation.
     - Comparisons work on numbers (with int/float coercion) or on strings. Other mixes are errors.
     - Arithmetic on two integers stays an integer, except for '/' and '^', which always produce a float (5 / 2 is 2.5).
+    - Integers are 64-bit and signed; a result that does not fit is an error rather than a wrapped or truncated value. Floats follow IEEE 754 and saturate to infinity instead.
     - '==' and '!=' do not coerce: an integer never equals a float, and a string never equals a number.
 - Truthiness (used by !, &&, ||)
   - These are the rules of the default coercion policy; see "Custom coercions" below to change them.
