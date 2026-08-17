@@ -1,3 +1,4 @@
+pub mod coerce;
 pub mod dict;
 pub mod error;
 pub mod expression;

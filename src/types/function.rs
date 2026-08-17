@@ -1,10 +1,11 @@
+use crate::types::coerce::Context;
 use crate::types::error::{Error, Result};
 use crate::types::object::Object;
 use crate::types::value::Value;
 use std::any::Any;
 use std::rc::Rc;
 
-pub type Callable = Rc<dyn Fn(&[Value]) -> Result<Value>>;
+pub type Callable = Rc<dyn Fn(&[Value], &Context) -> Result<Value>>;
 
 pub fn new(callable: Callable) -> Value {
     Value::Object(Rc::new(Function::new(callable)))
@@ -25,8 +26,8 @@ impl Object for Function {
         "function"
     }
 
-    fn call(&self, args: &[Value]) -> Result<Value> {
-        self.callable.as_ref()(args)
+    fn call(&self, args: &[Value], cx: &Context) -> Result<Value> {
+        self.callable.as_ref()(args, cx)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -38,26 +39,28 @@ impl Object for Function {
     }
 }
 
+/// A function taking no arguments.
 pub fn method0<F>(f: F) -> Value
 where
-    F: Fn() -> Result<Value> + 'static,
+    F: Fn(&Context) -> Result<Value> + 'static,
 {
-    new(Rc::new(move |args: &[Value]| {
+    new(Rc::new(move |args: &[Value], cx: &Context| {
         if !args.is_empty() {
             return Err(Error::EvaluationFailed("expected 0 args".into()));
         }
-        f()
+        f(cx)
     }))
 }
 
+/// A function taking one expression-language argument.
 pub fn method1<F>(f: F) -> Value
 where
-    F: Fn(&Value) -> Result<Value> + 'static,
+    F: Fn(&Value, &Context) -> Result<Value> + 'static,
 {
-    new(Rc::new(move |args: &[Value]| {
+    new(Rc::new(move |args: &[Value], cx: &Context| {
         if args.len() != 1 {
             return Err(Error::EvaluationFailed("expected 1 arg".into()));
         }
-        f(&args[0])
+        f(&args[0], cx)
     }))
 }

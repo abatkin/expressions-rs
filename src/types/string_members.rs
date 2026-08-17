@@ -1,3 +1,4 @@
+use crate::types::coerce::Context;
 use crate::types::error::{Error, Result};
 use crate::types::function;
 use crate::types::primitive::Primitive;
@@ -9,19 +10,19 @@ pub fn get_string_member(value: &str, name: &str) -> Result<Value> {
         "length" => Ok(Value::from(value.len() as i64)),
         "toUpper" => {
             let base = value.to_string();
-            Ok(function::method0(move || Ok(Value::from(base.to_uppercase()))))
+            Ok(function::method0(move |_cx| Ok(Value::from(base.to_uppercase()))))
         }
         "toLower" => {
             let base = value.to_string();
-            Ok(function::method0(move || Ok(Value::from(base.to_lowercase()))))
+            Ok(function::method0(move |_cx| Ok(Value::from(base.to_lowercase()))))
         }
         "trim" => {
             let base = value.to_string();
-            Ok(function::method0(move || Ok(Value::from(base.trim().to_string()))))
+            Ok(function::method0(move |_cx| Ok(Value::from(base.trim().to_string()))))
         }
         "contains" => {
             let base = value.to_string();
-            Ok(function::method1(move |arg: &Value| {
+            Ok(function::method1(move |arg: &Value, _cx: &Context| {
                 if let Value::Primitive(Primitive::Str(s)) = arg {
                     Ok(Value::from(base.contains(s)))
                 } else {
@@ -31,7 +32,7 @@ pub fn get_string_member(value: &str, name: &str) -> Result<Value> {
         }
         "substring" => {
             let base = value.to_string();
-            Ok(function::new(Rc::new(move |args: &[Value]| {
+            Ok(function::new(Rc::new(move |args: &[Value], _cx: &Context| {
                 if args.is_empty() || args.len() > 2 {
                     return Err(Error::EvaluationFailed("expected 1 or 2 args".into()));
                 }
