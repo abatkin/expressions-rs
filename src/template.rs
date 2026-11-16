@@ -12,6 +12,7 @@ use crate::parser;
 use crate::types::coerce::{Coercions, STANDARD};
 use crate::types::error::{Error, Result};
 use crate::types::expression::Expr;
+use crate::types::value::Value;
 
 /// A string with zero or more `${...}` expressions, parsed but not evaluated.
 ///
@@ -148,34 +149,90 @@ impl Template {
     /// [`Error::InterpolationFailed`] identifying the expression. Never returns a
     /// parse error.
     pub fn evaluate_with<T: VariableResolver>(&self, resolver: &T, coercions: &dyn Coercions) -> Result<String> {
+        self.evaluate_rendered(resolver, coercions, |value| Ok(value.to_string()))
+    }
+
+    /// Like [`Template::evaluate_with`], but the caller turns each expression's
+    /// value into text.
+    ///
+    /// `render` is called once per expression, left to right, with the value of
+    /// an expression that evaluated successfully; its output is joined to the
+    /// literal text. It is never called for literal text (including `$${`
+    /// escapes), nor for an expression that failed to evaluate. Evaluation stops
+    /// at the first failure from either step, and an `Err` from `render` is
+    /// reported exactly like an evaluation failure: as
+    /// [`Error::InterpolationFailed`] for that expression, with the caller's
+    /// error, unchanged, as its `error`.
+    ///
+    /// ```
+    /// use simple_expressions::evaluator::VariableResolver;
+    /// use simple_expressions::template::Template;
+    /// use simple_expressions::types::coerce::STANDARD;
+    /// use simple_expressions::types::error::Error;
+    /// use simple_expressions::types::value::Value;
+    ///
+    /// struct NoVars;
+    /// impl VariableResolver for NoVars {
+    ///     fn resolve(&self, _: &str) -> Option<Value> {
+    ///         None
+    ///     }
+    /// }
+    ///
+    /// // accept only scalars
+    /// let scalars_only = |v: &Value| match v {
+    ///     Value::Primitive(p) => Ok(p.to_string()),
+    ///     other => Err(Error::TypeMismatch(format!("cannot interpolate a {}", other.type_name()))),
+    /// };
+    ///
+    /// let ok = Template::parse("n=${1 + 2}").unwrap();
+    /// assert_eq!(ok.evaluate_rendered(&NoVars, &STANDARD, scalars_only).unwrap(), "n=3");
+    ///
+    /// let bad = Template::parse("a${1}b${[1, 2]}").unwrap();
+    /// match bad.evaluate_rendered(&NoVars, &STANDARD, scalars_only).unwrap_err() {
+    ///     Error::InterpolationFailed { segment, offset, error, .. } => {
+    ///         assert_eq!((segment, offset), (3, 6));
+    ///         assert!(matches!(*error, Error::TypeMismatch(_)));
+    ///     }
+    ///     other => panic!("{other:?}"),
+    /// }
+    /// ```
+    pub fn evaluate_rendered<T, R>(&self, resolver: &T, coercions: &dyn Coercions, mut render: R) -> Result<String>
+    where
+        T: VariableResolver,
+        R: FnMut(&Value) -> Result<String>,
+    {
         let evaluator = Evaluator::new_with_coercions(resolver, coercions);
         let mut out = String::with_capacity(self.source.len());
         for (index, segment) in self.segments.iter().enumerate() {
             match segment {
                 Segment::Literal(text) => out.push_str(text),
                 Segment::Expression { expr, span } => {
-                    let value = evaluator.evaluate(expr).map_err(|error| {
-                        let (line, column) = parser::line_col(&self.source, span.start);
-                        Error::InterpolationFailed {
-                            segment: index,
-                            offset: span.start,
-                            line,
-                            column,
-                            error: Box::new(error),
-                        }
-                    })?;
-                    out.push_str(&value.to_string());
+                    let text = evaluator.evaluate(expr).and_then(|value| render(&value)).map_err(|error| self.failure(index, span.start, error))?;
+                    out.push_str(&text);
                 }
             }
         }
         Ok(out)
+    }
+
+    /// `error`, located at the expression at `segment`, whose `${` is at byte
+    /// `offset` of the source.
+    fn failure(&self, segment: usize, offset: usize, error: Error) -> Error {
+        let (line, column) = parser::line_col(&self.source, offset);
+        Error::InterpolationFailed {
+            segment,
+            offset,
+            line,
+            column,
+            error: Box::new(error),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::value::Value;
+    use std::cell::RefCell;
 
     struct Vars;
     impl VariableResolver for Vars {
@@ -333,5 +390,114 @@ mod tests {
         assert_eq!(t.evaluate(&Vars).unwrap(), "11");
         assert_eq!(copy, t);
         assert_eq!(copy.evaluate(&Vars).unwrap(), "11");
+    }
+
+    /// Renders scalars with `Display`, rejects anything else.
+    fn scalars_only(value: &Value) -> Result<String> {
+        match value {
+            Value::Primitive(p) => Ok(p.to_string()),
+            other => Err(Error::TypeMismatch(format!("cannot interpolate a {}", other.type_name()))),
+        }
+    }
+
+    /// `(segment, offset, line, column, error)` of an interpolation failure.
+    fn located(err: Error) -> (usize, usize, usize, usize, Error) {
+        match err {
+            Error::InterpolationFailed { segment, offset, line, column, error } => (segment, offset, line, column, *error),
+            other => panic!("expected an interpolation failure, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn renderer_output_is_joined_to_the_literal_text() {
+        let t = Template::parse("<${x}|${name}>").unwrap();
+        assert_eq!(t.evaluate_rendered(&Vars, &STANDARD, |v| Ok(format!("[{}]", v))).unwrap(), "<[10]|[world]>");
+    }
+
+    #[test]
+    fn rejected_value_identifies_the_expression() {
+        // ...........................01234567
+        let t = Template::parse("a${x}b${[1, 2]}").unwrap();
+        let (segment, offset, line, column, error) = located(t.evaluate_rendered(&Vars, &STANDARD, scalars_only).unwrap_err());
+        assert_eq!((segment, offset, line, column), (3, 6, 1, 7));
+        assert!(matches!(t.segments()[segment], Segment::Expression { ref span, .. } if &t.source()[span.clone()] == "${[1, 2]}"));
+        // the caller's error, unchanged
+        assert!(matches!(error, Error::TypeMismatch(ref m) if m == "cannot interpolate a list"), "{:?}", error);
+    }
+
+    #[test]
+    fn rejected_value_on_a_later_line() {
+        let t = Template::parse("one ${x}\ntwo ${{'a': 1}}").unwrap();
+        let (segment, offset, line, column, _) = located(t.evaluate_rendered(&Vars, &STANDARD, scalars_only).unwrap_err());
+        assert_eq!((segment, offset, line, column), (3, 13, 2, 5));
+    }
+
+    #[test]
+    fn rejection_is_reported_like_an_evaluation_failure() {
+        let t = Template::parse("${x}\n${y}").unwrap();
+        let evaluation = t.evaluate_rendered(&Vars, &STANDARD, scalars_only).unwrap_err();
+        let rendering = Template::parse("${x}\n${[1]}").unwrap().evaluate_rendered(&Vars, &STANDARD, scalars_only).unwrap_err();
+        let (e_seg, e_off, e_line, e_col, _) = located(evaluation);
+        let (r_seg, r_off, r_line, r_col, _) = located(rendering);
+        assert_eq!((e_seg, e_off, e_line, e_col), (r_seg, r_off, r_line, r_col));
+    }
+
+    #[test]
+    fn render_sees_each_successful_expression_once_in_order() {
+        let seen = RefCell::new(Vec::new());
+        let t = Template::parse("lit $${esc} ${x} more ${name}$${} ${x + 1} end").unwrap();
+        let out = t
+            .evaluate_rendered(&Vars, &STANDARD, |v| {
+                seen.borrow_mut().push(v.to_string());
+                Ok(v.to_string())
+            })
+            .unwrap();
+        assert_eq!(out, "lit ${esc} 10 more world${} 11 end");
+        // literal text and escapes never reach the renderer
+        assert_eq!(*seen.borrow(), ["10", "world", "11"]);
+    }
+
+    #[test]
+    fn literal_templates_never_call_render() {
+        for input in ["", "abc", "$${x}", "a$b$$c"] {
+            let t = Template::parse(input).unwrap();
+            let out = t.evaluate_rendered(&Vars, &STANDARD, |_| panic!("render called for {:?}", input)).unwrap();
+            assert_eq!(Some(out.as_str()), t.as_literal());
+        }
+    }
+
+    #[test]
+    fn evaluation_failure_wins_before_render() {
+        let seen = RefCell::new(Vec::new());
+        let t = Template::parse("${x}${missing}${name}").unwrap();
+        let err = t
+            .evaluate_rendered(&Vars, &STANDARD, |v| {
+                seen.borrow_mut().push(v.to_string());
+                Ok(v.to_string())
+            })
+            .unwrap_err();
+        let (segment, _, _, _, error) = located(err);
+        assert_eq!(segment, 1);
+        assert!(matches!(error, Error::ResolveFailed(_)), "{:?}", error);
+        // the failed expression's value never reached render, and evaluation stopped there
+        assert_eq!(*seen.borrow(), ["10"]);
+    }
+
+    #[test]
+    fn render_failure_stops_evaluation() {
+        struct Counting(RefCell<Vec<String>>);
+        impl VariableResolver for Counting {
+            fn resolve(&self, name: &str) -> Option<Value> {
+                self.0.borrow_mut().push(name.to_string());
+                Some(Value::from(1i64))
+            }
+        }
+        let resolver = Counting(RefCell::new(Vec::new()));
+        let t = Template::parse("${a}${b}${c}").unwrap();
+        let err = t.evaluate_rendered(&resolver, &STANDARD, |_| Err(Error::EvaluationFailed("no".into()))).unwrap_err();
+        let (segment, _, _, _, error) = located(err);
+        assert_eq!(segment, 0);
+        assert!(matches!(error, Error::EvaluationFailed(ref m) if m == "no"));
+        assert_eq!(*resolver.0.borrow(), ["a"]);
     }
 }

@@ -60,14 +60,24 @@ A small expression language with variables, function calls, simple types and com
   - Parse once, evaluate later: `Template::parse(text)` (in `simple_expressions::template`) parses every `${ ... }` without resolving or evaluating anything, and reports syntax errors with positions in the whole text. The `Template` can be stored (it is `Clone` and `Debug`) and evaluated any number of times with `template.evaluate(&resolver)` or `template.evaluate_with(&resolver, &coercions)`; evaluating never re-parses and never produces a parse error. `evaluate_interpolations` is shorthand for `Template::parse(text)?.evaluate(&resolver)`.
     - `template.is_literal()` is true when the text has no `${ ... }`; evaluating it then cannot fail, and `template.as_literal()` returns the text (with escapes applied) without needing a resolver.
     - `template.source()` is the text as written; `template.segments()` lists the parsed `Segment::Literal(text)` and `Segment::Expression { expr, span }` pieces in order, where `span` is the byte range of the `${ ... }` in the source.
-  - When an expression fails to evaluate, the error is `Error::InterpolationFailed { segment, offset, line, column, error }`: `segment` indexes `template.segments()`, `offset`/`line`/`column` locate the failing `${` in the source, and `error` is the underlying failure.
+    - Custom rendering: `template.evaluate_rendered(&resolver, &coercions, render)` hands each expression's value to `render: FnMut(&Value) -> Result<String>` instead of using `Display`, and joins its output to the literal text. Use it to restrict which types a template may produce, or to format them differently. `render` is called once per expression, left to right, only after that expression evaluates successfully; it never sees literal text or `$${` escapes. `evaluate_with` is `evaluate_rendered` with `|v| Ok(v.to_string())`.
+  - When an expression fails to evaluate, or `render` returns an `Err` for its value, the error is `Error::InterpolationFailed { segment, offset, line, column, error }`: `segment` indexes `template.segments()`, `offset`/`line`/`column` locate the failing `${` in the source, and `error` is the underlying failure, or the renderer's own error unchanged. Evaluation stops at the first failure of either kind.
 
 ```rust
 use simple_expressions::template::Template;
+use simple_expressions::types::{coerce::STANDARD, error::Error, value::Value};
 
 let greeting = Template::parse("Hello ${name}! Cost: $${price}")?; // syntax errors surface here
 // ...later, possibly many times:
 let text = greeting.evaluate(&resolver)?; // "Hello world! Cost: ${price}"
+
+// only strings, numbers and booleans may be interpolated
+let scalars_only = |v: &Value| match v {
+    Value::Primitive(p) => Ok(p.to_string()),
+    other => Err(Error::TypeMismatch(format!("cannot interpolate a {}", other.type_name()))),
+};
+let text = greeting.evaluate_rendered(&resolver, &STANDARD, scalars_only)?;
+// a list in "a${x}b${[1, 2]}" fails with InterpolationFailed { segment: 3, offset: 6, line: 1, column: 7, error: TypeMismatch(..) }
 ```
 
 Built-in members and functions

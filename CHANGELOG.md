@@ -11,6 +11,7 @@
 
 - `template::Template`, which splits `evaluate_interpolations` into a parse step and an evaluate step. `Template::parse` reports every syntax error up front, with the same `Error::ParseError` positions as before (anchored to the whole input), without resolving or evaluating anything; `evaluate` / `evaluate_with` can then run any number of times and never produce a parse error. `Template` is `Clone`, `Debug` and `PartialEq`.
 - `Template::source`, `Template::segments` (`Segment::Literal` / `Segment::Expression { expr, span }`), `Template::is_literal` (no `${...}`, so evaluation cannot fail) and `Template::as_literal` (that text, if so).
+- `Template::evaluate_rendered(resolver, coercions, render)`, which hands each expression's value to the caller's `render` closure (`FnMut(&Value) -> Result<String>`) instead of using `Display`. `render` is called once per expression, left to right, after it evaluates successfully, and never for literal text or `$${` escapes. An `Err` from `render` is reported as `Error::InterpolationFailed` for that expression, with the same position fields as an evaluation failure and the caller's error unchanged. `evaluate_with` is `evaluate_rendered` with `|v| Ok(v.to_string())`.
 - `evaluate_interpolations` and `evaluate_interpolations_with` are now `Template::parse(input)?.evaluate_with(...)`.
 
 ## 0.4.1 Bug fixes

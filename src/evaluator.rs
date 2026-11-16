@@ -841,6 +841,7 @@ mod tests {
             assert_eq!(template.source(), input);
             assert_eq!(template.evaluate(&resolver).unwrap(), expected, "{:?}", input);
             assert_eq!(template.evaluate_with(&resolver, &STANDARD).unwrap(), expected, "{:?}", input);
+            assert_eq!(template.evaluate_rendered(&resolver, &STANDARD, |v| Ok(v.to_string())).unwrap(), expected, "{:?}", input);
         }
     }
 
