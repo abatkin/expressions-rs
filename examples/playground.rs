@@ -4,6 +4,7 @@ use simple_expressions::types::primitive::Primitive;
 use simple_expressions::types::value::Value;
 
 use simple_expressions::evaluator;
+use simple_expressions::template::Template;
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -34,6 +35,10 @@ fn main() -> Result<()> {
 
     evaluator::evaluate("foo + 'bar'", &resolver).unwrap();
     evaluator::evaluate_interpolations("barbar=${foo + 'bar'}", &resolver).unwrap();
+
+    // parse once, evaluate later
+    let template = Template::parse("barbar=${foo + 'bar'}, literal $${foo}").unwrap();
+    println!("{}", template.evaluate(&resolver).unwrap());
 
     Ok(())
 }

@@ -1,2 +1,7 @@
 a => a
 a${x} => a10
+# `$${` is a literal `${`; any other `$` is literal text
+a$${x} => a${x}
+$$${x} => $${x}
+a$b$$c$ => a$b$$c$
+${x}$${x}${x} => 10${x}10

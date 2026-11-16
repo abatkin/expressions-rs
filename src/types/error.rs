@@ -44,6 +44,22 @@ pub enum Error {
         /// The offending line with a caret under `column`.
         rendered: String,
     },
+    /// A `${...}` in a [`Template`](crate::template::Template) failed to evaluate
+    /// or render; `error` is the underlying failure.
+    #[error("evaluation failed in interpolation at line {line}, column {column}: {error}")]
+    InterpolationFailed {
+        /// Index into [`Template::segments`](crate::template::Template::segments)
+        /// of the failing expression.
+        segment: usize,
+        /// 0-based byte offset of the failing `${` in the template source.
+        offset: usize,
+        /// 1-based line of `offset`.
+        line: usize,
+        /// 1-based column of `offset`, in characters.
+        column: usize,
+        #[source]
+        error: Box<Error>,
+    },
     #[error("internal parse error: {0}")]
     InternalParserError(String),
 }

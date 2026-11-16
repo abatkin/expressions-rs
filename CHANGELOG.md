@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 Parsed templates, `$${` escape
+
+### Behavior changes
+
+- `$${` is an escape for a literal `${`. `"$${x}"` used to give `$` followed by the value of `x`; it now gives `${x}`.
+- An evaluation failure inside `${...}` is now `Error::InterpolationFailed`, which locates the failing expression and wraps the original error, instead of `Error::EvaluationFailed`.
+
+### Added
+
+- `template::Template`: parse a string once with `Template::parse`, evaluate it later with `evaluate` / `evaluate_with`. `evaluate_interpolations` now uses it.
+- `Template::evaluate_rendered`, which renders each value with a caller-supplied closure instead of `Display`. Its errors are reported as `InterpolationFailed` too.
+
 ## 0.4.1 Bug fixes
 
 - Identifiers that begin with a boolean literal (`trueish`, `false_value`) parse as identifiers again; the literals now require a word boundary.
