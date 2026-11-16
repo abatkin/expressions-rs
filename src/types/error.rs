@@ -44,15 +44,14 @@ pub enum Error {
         /// The offending line with a caret under `column`.
         rendered: String,
     },
-    /// An expression inside a [`Template`](crate::template::Template) failed to
-    /// evaluate. Identifies which `${...}` it was; `error` is the failure itself.
+    /// A `${...}` in a [`Template`](crate::template::Template) failed to evaluate
+    /// or render; `error` is the underlying failure.
     #[error("evaluation failed in interpolation at line {line}, column {column}: {error}")]
     InterpolationFailed {
         /// Index into [`Template::segments`](crate::template::Template::segments)
         /// of the failing expression.
         segment: usize,
-        /// 0-based byte offset in the template source of the `$` that opens the
-        /// failing `${...}`.
+        /// 0-based byte offset of the failing `${` in the template source.
         offset: usize,
         /// 1-based line of `offset`.
         line: usize,

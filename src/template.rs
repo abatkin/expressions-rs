@@ -1,9 +1,4 @@
 //! Strings with `${...}` expressions in them, parsed once and evaluated later.
-//!
-//! [`evaluate_interpolations`](crate::evaluator::evaluate_interpolations) parses and
-//! evaluates in one pass. [`Template`] separates the two, so a syntax error can be
-//! reported when the text is loaded, and the same template can be evaluated many
-//! times without re-parsing.
 
 use std::ops::Range;
 
@@ -16,8 +11,7 @@ use crate::types::value::Value;
 
 /// A string with zero or more `${...}` expressions, parsed but not evaluated.
 ///
-/// `$${` is an escape: it produces the two characters `${` and starts no
-/// expression. Any other `$` is literal text.
+/// `$${` produces a literal `${`; any other `$` is literal text.
 ///
 /// ```
 /// use simple_expressions::evaluator::VariableResolver;
@@ -48,14 +42,12 @@ pub struct Template {
 /// One piece of a [`Template`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Segment {
-    /// Text copied to the output as-is, with escapes already applied: the source
-    /// `$${` appears here as `${`.
+    /// Text with escapes applied.
     Literal(String),
     /// A `${...}` expression.
     Expression {
         expr: Expr,
-        /// Byte range in [`Template::source`] of the whole interpolation, from the
-        /// `$` of `${` through the closing `}`.
+        /// Byte range of the whole `${...}` in [`Template::source`].
         span: Range<usize>,
     },
 }
@@ -112,20 +104,17 @@ impl Template {
         &self.source
     }
 
-    /// The parsed pieces, in order. Adjacent literal text is always merged into
-    /// one [`Segment::Literal`], so two literals are never next to each other.
+    /// The parsed pieces, in order. Adjacent literal text is merged.
     pub fn segments(&self) -> &[Segment] {
         &self.segments
     }
 
-    /// True when the source held no `${...}`. Evaluating such a template returns
-    /// [`Template::as_literal`] and cannot fail.
+    /// True when the source held no `${...}`, so evaluation cannot fail.
     pub fn is_literal(&self) -> bool {
         self.segments.iter().all(|s| matches!(s, Segment::Literal(_)))
     }
 
-    /// The text evaluation would produce, if it does not depend on any
-    /// expression: `Some` exactly when [`Template::is_literal`] is true.
+    /// The evaluated text, if [`Template::is_literal`].
     pub fn as_literal(&self) -> Option<&str> {
         match self.segments.as_slice() {
             [] => Some(""),
@@ -134,35 +123,25 @@ impl Template {
         }
     }
 
-    /// Evaluate every expression and join the results to the literal text, using
-    /// the standard coercion policy.
-    ///
-    /// See [`Template::evaluate_with`].
+    /// Evaluate every expression, rendered with `Display`, and join the results to
+    /// the literal text.
     pub fn evaluate<T: VariableResolver>(&self, resolver: &T) -> Result<String> {
         self.evaluate_with(resolver, &STANDARD)
     }
 
     /// Like [`Template::evaluate`], with an explicit coercion policy.
     ///
-    /// Each result is rendered with `Display`. Expressions are evaluated left to
-    /// right, stopping at the first failure, which is reported as
-    /// [`Error::InterpolationFailed`] identifying the expression. Never returns a
-    /// parse error.
+    /// Failures are [`Error::InterpolationFailed`], never a parse error.
     pub fn evaluate_with<T: VariableResolver>(&self, resolver: &T, coercions: &dyn Coercions) -> Result<String> {
         self.evaluate_rendered(resolver, coercions, |value| Ok(value.to_string()))
     }
 
-    /// Like [`Template::evaluate_with`], but the caller turns each expression's
-    /// value into text.
+    /// Like [`Template::evaluate_with`], but each expression's value is turned
+    /// into text by `render` instead of `Display`.
     ///
-    /// `render` is called once per expression, left to right, with the value of
-    /// an expression that evaluated successfully; its output is joined to the
-    /// literal text. It is never called for literal text (including `$${`
-    /// escapes), nor for an expression that failed to evaluate. Evaluation stops
-    /// at the first failure from either step, and an `Err` from `render` is
-    /// reported exactly like an evaluation failure: as
-    /// [`Error::InterpolationFailed`] for that expression, with the caller's
-    /// error, unchanged, as its `error`.
+    /// `render` is called once per expression, left to right, after it evaluates
+    /// successfully. An `Err` from it is reported like an evaluation failure, as
+    /// [`Error::InterpolationFailed`] wrapping the caller's error unchanged.
     ///
     /// ```
     /// use simple_expressions::evaluator::VariableResolver;

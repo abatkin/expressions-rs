@@ -53,32 +53,10 @@ A small expression language with variables, function calls, simple types and com
   - `to_number` reports whether it found an integer or a float, so integer operands can produce integer results.
   - Turning values into text is deliberately not part of the policy; that is formatting, and it goes through `Display`.
 - String interpolation (library API)
-  - `evaluate_interpolations(...)` replaces each `${ ... }` with the value of the contained expression, rendered with `Display`. The result is always a string.
-  - Example: evaluating "Hello ${1 + 2}" yields "Hello 3". Braces inside quoted strings are handled; a missing closing '}' is a parse error.
-  - Escape: `$${` produces a literal `${` and starts no expression, so "$${x}" yields "${x}". Text is scanned left to right, so "$$${x}" is a literal `$` followed by the escape and yields "$${x}". Any other `$` (a lone `$`, `$$`, `$x`) is literal text.
-    - Behavior change in 0.5.0: before, "$${x}" yielded `$` followed by the value of `x`.
-  - Parse once, evaluate later: `Template::parse(text)` (in `simple_expressions::template`) parses every `${ ... }` without resolving or evaluating anything, and reports syntax errors with positions in the whole text. The `Template` can be stored (it is `Clone` and `Debug`) and evaluated any number of times with `template.evaluate(&resolver)` or `template.evaluate_with(&resolver, &coercions)`; evaluating never re-parses and never produces a parse error. `evaluate_interpolations` is shorthand for `Template::parse(text)?.evaluate(&resolver)`.
-    - `template.is_literal()` is true when the text has no `${ ... }`; evaluating it then cannot fail, and `template.as_literal()` returns the text (with escapes applied) without needing a resolver.
-    - `template.source()` is the text as written; `template.segments()` lists the parsed `Segment::Literal(text)` and `Segment::Expression { expr, span }` pieces in order, where `span` is the byte range of the `${ ... }` in the source.
-    - Custom rendering: `template.evaluate_rendered(&resolver, &coercions, render)` hands each expression's value to `render: FnMut(&Value) -> Result<String>` instead of using `Display`, and joins its output to the literal text. Use it to restrict which types a template may produce, or to format them differently. `render` is called once per expression, left to right, only after that expression evaluates successfully; it never sees literal text or `$${` escapes. `evaluate_with` is `evaluate_rendered` with `|v| Ok(v.to_string())`.
-  - When an expression fails to evaluate, or `render` returns an `Err` for its value, the error is `Error::InterpolationFailed { segment, offset, line, column, error }`: `segment` indexes `template.segments()`, `offset`/`line`/`column` locate the failing `${` in the source, and `error` is the underlying failure, or the renderer's own error unchanged. Evaluation stops at the first failure of either kind.
-
-```rust
-use simple_expressions::template::Template;
-use simple_expressions::types::{coerce::STANDARD, error::Error, value::Value};
-
-let greeting = Template::parse("Hello ${name}! Cost: $${price}")?; // syntax errors surface here
-// ...later, possibly many times:
-let text = greeting.evaluate(&resolver)?; // "Hello world! Cost: ${price}"
-
-// only strings, numbers and booleans may be interpolated
-let scalars_only = |v: &Value| match v {
-    Value::Primitive(p) => Ok(p.to_string()),
-    other => Err(Error::TypeMismatch(format!("cannot interpolate a {}", other.type_name()))),
-};
-let text = greeting.evaluate_rendered(&resolver, &STANDARD, scalars_only)?;
-// a list in "a${x}b${[1, 2]}" fails with InterpolationFailed { segment: 3, offset: 6, line: 1, column: 7, error: TypeMismatch(..) }
-```
+  - `evaluate_interpolations(...)` replaces each `${ ... }` with the value of the contained expression, rendered with `Display`. Example: "Hello ${1 + 2}" yields "Hello 3". A missing closing '}' is a parse error.
+  - `$${` produces a literal `${`, so "$${x}" yields "${x}" (before 0.5.0 it yielded `$` followed by the value of `x`). Any other `$` is literal text.
+  - `Template::parse(...)` parses once and reports syntax errors up front; the template can then be evaluated many times. `evaluate_rendered(...)` takes a closure that turns each value into text, e.g. to reject lists.
+  - Evaluation and rendering failures are `Error::InterpolationFailed`, which says which `${ ... }` failed.
 
 Built-in members and functions
 
