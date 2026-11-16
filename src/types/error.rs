@@ -57,6 +57,7 @@ pub enum Error {
         line: usize,
         /// 1-based column of `offset`, in characters.
         column: usize,
+        #[source]
         error: Box<Error>,
     },
     #[error("internal parse error: {0}")]
