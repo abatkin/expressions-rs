@@ -53,8 +53,22 @@ A small expression language with variables, function calls, simple types and com
   - `to_number` reports whether it found an integer or a float, so integer operands can produce integer results.
   - Turning values into text is deliberately not part of the policy; that is formatting, and it goes through `Display`.
 - String interpolation (library API)
-  - When using the provided Evaluator, evaluate_interpolated replaces ${ ... } segments with the value of the contained expression. The result is always a string.
-  - Example: evaluating "Hello ${1 + 2}" yields "Hello 3". Braces inside quoted strings are handled; a missing closing '}' is an error.
+  - `evaluate_interpolations(...)` replaces each `${ ... }` with the value of the contained expression, rendered with `Display`. The result is always a string.
+  - Example: evaluating "Hello ${1 + 2}" yields "Hello 3". Braces inside quoted strings are handled; a missing closing '}' is a parse error.
+  - Escape: `$${` produces a literal `${` and starts no expression, so "$${x}" yields "${x}". Text is scanned left to right, so "$$${x}" is a literal `$` followed by the escape and yields "$${x}". Any other `$` (a lone `$`, `$$`, `$x`) is literal text.
+    - Behavior change in 0.5.0: before, "$${x}" yielded `$` followed by the value of `x`.
+  - Parse once, evaluate later: `Template::parse(text)` (in `simple_expressions::template`) parses every `${ ... }` without resolving or evaluating anything, and reports syntax errors with positions in the whole text. The `Template` can be stored (it is `Clone` and `Debug`) and evaluated any number of times with `template.evaluate(&resolver)` or `template.evaluate_with(&resolver, &coercions)`; evaluating never re-parses and never produces a parse error. `evaluate_interpolations` is shorthand for `Template::parse(text)?.evaluate(&resolver)`.
+    - `template.is_literal()` is true when the text has no `${ ... }`; evaluating it then cannot fail, and `template.as_literal()` returns the text (with escapes applied) without needing a resolver.
+    - `template.source()` is the text as written; `template.segments()` lists the parsed `Segment::Literal(text)` and `Segment::Expression { expr, span }` pieces in order, where `span` is the byte range of the `${ ... }` in the source.
+  - When an expression fails to evaluate, the error is `Error::InterpolationFailed { segment, offset, line, column, error }`: `segment` indexes `template.segments()`, `offset`/`line`/`column` locate the failing `${` in the source, and `error` is the underlying failure.
+
+```rust
+use simple_expressions::template::Template;
+
+let greeting = Template::parse("Hello ${name}! Cost: $${price}")?; // syntax errors surface here
+// ...later, possibly many times:
+let text = greeting.evaluate(&resolver)?; // "Hello world! Cost: ${price}"
+```
 
 Built-in members and functions
 

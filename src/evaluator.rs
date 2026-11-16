@@ -1,4 +1,5 @@
 use crate::parser;
+use crate::template::Template;
 use crate::types::coerce::{Coercions, Context, Number, STANDARD};
 use crate::types::error::{Error, Result};
 use crate::types::expression::{BinaryOp, Expr, UnaryOp};
@@ -18,33 +19,17 @@ pub fn evaluate_with<T: VariableResolver>(input: &str, resolver: &T, coercions: 
     Ok(result)
 }
 
+/// Replace each `${...}` in `input` with the value of the expression inside it.
+///
+/// Parses and evaluates in one call; use [`Template`] to parse once and evaluate
+/// later or repeatedly. `$${` produces a literal `${`.
 pub fn evaluate_interpolations<T: VariableResolver>(input: &str, resolver: &T) -> Result<String> {
     evaluate_interpolations_with(input, resolver, &STANDARD)
 }
 
 /// Like [`evaluate_interpolations`], with an explicit coercion policy.
 pub fn evaluate_interpolations_with<T: VariableResolver>(input: &str, resolver: &T, coercions: &dyn Coercions) -> Result<String> {
-    let mut out = String::new();
-    let mut rest = input;
-    while let Some(idx) = rest.find("${") {
-        // copy literal part before the interpolation
-        out.push_str(&rest[..idx]);
-        let after = &rest[idx + 2..];
-        // `rest` is always a suffix of `input`, so this is where `after` begins in
-        // the string the user wrote. Without it, a parse error inside `${...}`
-        // would report its position relative to `after` and point at the wrong
-        // place -- earlier, and on the wrong line entirely for multi-line input.
-        let start = input.len() - rest.len() + idx + 2;
-        let (expr, consumed) = parser::parse_internal(parser::Origin::fragment(input, start), parser::Rule::delimited_expr)?;
-        let evaluator = Evaluator::new_with_coercions(resolver, coercions);
-        let result = evaluator.evaluate(&expr).map_err(|e| Error::EvaluationFailed(format!("evaluation error: {}", e)))?;
-        let result_str = result.to_string();
-        out.push_str(result_str.as_str());
-        rest = &after[consumed..];
-    }
-    // copy the remainder
-    out.push_str(rest);
-    Ok(out)
+    Template::parse(input)?.evaluate_with(resolver, coercions)
 }
 
 pub trait VariableResolver {
@@ -835,14 +820,65 @@ mod tests {
     #[test]
     fn eval_interpolation() {
         let resolver = MockResolver::new();
-        assert_eq!(evaluate_interpolations("${'abc'}", &resolver).unwrap(), "abc");
-        assert_eq!(evaluate_interpolations("${   'abc' }", &resolver).unwrap(), "abc");
-        assert_eq!(evaluate_interpolations("${   'abc' } ", &resolver).unwrap(), "abc ");
-        assert_eq!(evaluate_interpolations("x${'abc'}y", &resolver).unwrap(), "xabcy");
-        assert_eq!(evaluate_interpolations("x${'abc\"\\''}\"y", &resolver).unwrap(), "xabc\"'\"y");
-        assert_eq!(evaluate_interpolations("x${[1,2,3][1]}y", &resolver).unwrap(), "x2y");
-        assert_eq!(evaluate_interpolations("x${{'foo': 'bar', 'baz': 'bam'}['foo']}y", &resolver).unwrap(), "xbary");
-        assert_eq!(evaluate_interpolations("x${{\"foo\": \"bar\", \"baz\": \"bam\"}[\"foo\"]}y", &resolver).unwrap(), "xbary");
+        let cases = [
+            ("${'abc'}", "abc"),
+            ("${   'abc' }", "abc"),
+            ("${   'abc' } ", "abc "),
+            ("x${'abc'}y", "xabcy"),
+            ("x${'abc\"\\''}\"y", "xabc\"'\"y"),
+            ("x${[1,2,3][1]}y", "x2y"),
+            ("x${{'foo': 'bar', 'baz': 'bam'}['foo']}y", "xbary"),
+            ("x${{\"foo\": \"bar\", \"baz\": \"bam\"}[\"foo\"]}y", "xbary"),
+            // `$${` is a literal `${`
+            ("$${x}", "${x}"),
+            ("$$${x}", "$${x}"),
+            ("a$${b}${'c'}", "a${b}c"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(evaluate_interpolations(input, &resolver).unwrap(), expected, "{:?}", input);
+            assert_eq!(evaluate_interpolations_with(input, &resolver, &STANDARD).unwrap(), expected, "{:?}", input);
+            let template = Template::parse(input).unwrap();
+            assert_eq!(template.source(), input);
+            assert_eq!(template.evaluate(&resolver).unwrap(), expected, "{:?}", input);
+            assert_eq!(template.evaluate_with(&resolver, &STANDARD).unwrap(), expected, "{:?}", input);
+        }
+    }
+
+    #[test]
+    fn interpolation_from_file_cases() {
+        const CASES: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/interpolator_cases.txt"));
+        let resolver = MockResolver::new();
+        eval_from_file(CASES, |src| evaluate_interpolations(src, &resolver));
+        eval_from_file(CASES, |src| Template::parse(src)?.evaluate(&resolver));
+    }
+
+    /// The failure is located, and still carries the underlying error.
+    #[test]
+    fn interpolation_evaluation_errors_say_which_expression_failed() {
+        let err = evaluate_interpolations("${x} ${nope} ${x}", &MockResolver::new()).unwrap_err();
+        match err {
+            Error::InterpolationFailed {
+                segment: 2,
+                offset: 5,
+                line: 1,
+                column: 6,
+                ref error,
+            } => {
+                assert!(matches!(**error, Error::ResolveFailed(_)), "{:?}", error);
+            }
+            ref other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    /// The coercion policy reaches template evaluation.
+    #[test]
+    fn interpolation_uses_the_given_coercions() {
+        use crate::types::coerce::StrictCoercions;
+        let template = Template::parse("${!0}").unwrap();
+        assert_eq!(template.evaluate(&MockResolver::new()).unwrap(), "true");
+        let err = template.evaluate_with(&MockResolver::new(), &StrictCoercions).unwrap_err();
+        assert!(matches!(err, Error::InterpolationFailed { segment: 0, .. }), "{:?}", err);
+        assert!(evaluate_interpolations_with("${!0}", &MockResolver::new(), &StrictCoercions).is_err());
     }
 
     /// `(line, column, offset)` of the parse error for `input`.

@@ -107,7 +107,7 @@ impl<'a> Origin<'a> {
 /// 1-based line and character column of `offset` within `text`.
 ///
 /// Counts `\n` only, which matches both pest and the grammar's `NEWLINE`.
-fn line_col(text: &str, offset: usize) -> (usize, usize) {
+pub(crate) fn line_col(text: &str, offset: usize) -> (usize, usize) {
     let offset = offset.min(text.len());
     let before = &text[..offset];
     let line_start = before.rfind('\n').map_or(0, |i| i + 1);
