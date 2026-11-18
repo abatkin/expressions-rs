@@ -144,7 +144,22 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                     },
                 }
             }
-            Expr::Binary { op, left, right } => self.eval_binary(*op, left, right),
+            Expr::Binary { first, rest } => {
+                let mut value = self.evaluate(first)?;
+                for (op, right) in rest {
+                    value = self.eval_binary(*op, value, right)?;
+                }
+                Ok(value)
+            }
+            Expr::Power { bases, exponent } => {
+                // operands are evaluated left to right, then combined right to left
+                let bases = bases.iter().map(|base| self.evaluate(base)).collect::<Result<Vec<_>>>()?;
+                let mut value = self.evaluate(exponent)?;
+                for base in bases.into_iter().rev() {
+                    value = self.power(base, value)?;
+                }
+                Ok(value)
+            }
         }
     }
 
@@ -169,46 +184,41 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
         }
     }
 
-    fn eval_binary(&self, op: BinaryOp, left: &Expr, right: &Expr) -> Result<Value> {
+    /// Applies `op` to an evaluated `left` and an unevaluated `right`, which `||`
+    /// and `&&` evaluate only when needed.
+    fn eval_binary(&self, op: BinaryOp, left: Value, right: &Expr) -> Result<Value> {
         use BinaryOp::*;
         match op {
             Or => {
-                let l = self.evaluate(left)?;
-                let lb = self.context.to_bool(&l)?;
-                if lb {
+                if self.context.to_bool(&left)? {
                     return Ok(Value::Primitive(Primitive::Bool(true)));
                 }
-                let r = self.evaluate(right)?;
-                let rb = self.context.to_bool(&r)?;
-                Ok(Value::Primitive(Primitive::Bool(lb || rb)))
+                let right = self.evaluate(right)?;
+                Ok(Value::Primitive(Primitive::Bool(self.context.to_bool(&right)?)))
             }
             And => {
-                let l = self.evaluate(left)?;
-                let lb = self.context.to_bool(&l)?;
-                if !lb {
+                if !self.context.to_bool(&left)? {
                     return Ok(Value::Primitive(Primitive::Bool(false)));
                 }
-                let r = self.evaluate(right)?;
-                let rb = self.context.to_bool(&r)?;
-                Ok(Value::Primitive(Primitive::Bool(lb && rb)))
+                let right = self.evaluate(right)?;
+                Ok(Value::Primitive(Primitive::Bool(self.context.to_bool(&right)?)))
             }
-            Eq => {
-                let l = self.evaluate(left)?;
-                let r = self.evaluate(right)?;
-                Ok(Value::Primitive(Primitive::Bool(l == r)))
-            }
-            Ne => {
-                let l = self.evaluate(left)?;
-                let r = self.evaluate(right)?;
-                Ok(Value::Primitive(Primitive::Bool(l != r)))
-            }
+            _ => self.apply_binary(op, left, self.evaluate(right)?),
+        }
+    }
+
+    /// Applies an operator that always needs both operands, i.e. any but `||` and `&&`.
+    fn apply_binary(&self, op: BinaryOp, left: Value, right: Value) -> Result<Value> {
+        use BinaryOp::*;
+        match op {
+            Or | And => unreachable!("logical operators short-circuit in eval_binary"),
+            Eq => Ok(Value::Primitive(Primitive::Bool(left == right))),
+            Ne => Ok(Value::Primitive(Primitive::Bool(left != right))),
             Lt | Le | Gt | Ge => {
-                let l = self.evaluate(left)?;
-                let r = self.evaluate(right)?;
                 // NOTE: STANDARD, not the active policy. "Is it a number?" is the
                 // operator's dispatch test here, not a conversion -- failing it selects
                 // string comparison instead. See Add, below.
-                if let (Some(a), Some(b)) = (standard_number(&l), standard_number(&r)) {
+                if let (Some(a), Some(b)) = (standard_number(&left), standard_number(&right)) {
                     let res = match compare_numbers(a, b) {
                         Some(ord) => match op {
                             Lt => ord.is_lt(),
@@ -222,7 +232,7 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                     };
                     return Ok(Value::Primitive(Primitive::Bool(res)));
                 }
-                if let (Value::Primitive(Primitive::Str(a)), Value::Primitive(Primitive::Str(b))) = (&l, &r) {
+                if let (Value::Primitive(Primitive::Str(a)), Value::Primitive(Primitive::Str(b))) = (&left, &right) {
                     let res = match op {
                         Lt => a < b,
                         Le => a <= b,
@@ -235,17 +245,15 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                 Err(Error::TypeMismatch("comparison requires two numbers or two strings".into()))
             }
             Add => {
-                let l = self.evaluate(left)?;
-                let r = self.evaluate(right)?;
                 // NOTE: STANDARD here too. A policy that read strings as numbers
                 // would silently turn '"2" + "3"' from "23" into 5 -- an
                 // operator-dispatch change, not a coercion.
-                match (standard_number(&l), standard_number(&r)) {
+                match (standard_number(&left), standard_number(&right)) {
                     // once dispatch has settled on arithmetic, integers stay integers
                     (Some(Number::Int(a)), Some(Number::Int(b))) => Ok(Value::from(a.checked_add(b).ok_or(Error::IntegerOverflow { op: "+" })?)),
                     (Some(a), Some(b)) => Ok(Value::from(a.as_f64() + b.as_f64())),
                     _ => {
-                        if let (Value::Primitive(Primitive::Str(as_)), Value::Primitive(Primitive::Str(bs_))) = (&l, &r) {
+                        if let (Value::Primitive(Primitive::Str(as_)), Value::Primitive(Primitive::Str(bs_))) = (&left, &right) {
                             Ok(Value::Primitive(Primitive::Str(format!("{}{}", as_, bs_))))
                         } else {
                             Err(Error::TypeMismatch("'+' expects numbers or strings".into()))
@@ -253,14 +261,12 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                     }
                 }
             }
-            Sub | Mul | Div | Mod | Pow => {
-                let l = self.evaluate(left)?;
-                let r = self.evaluate(right)?;
+            Sub | Mul | Div | Mod => {
                 // these operators only ever mean arithmetic, so the policy decides
                 // outright what counts as a number -- and reports whether it found
                 // an integer, which is what lets the result stay one
-                let (ln, rn) = (self.context.to_number(&l)?, self.context.to_number(&r)?);
-                if let (Number::Int(a), Number::Int(b)) = (ln, rn) {
+                let (left, right) = (self.context.to_number(&left)?, self.context.to_number(&right)?);
+                if let (Number::Int(a), Number::Int(b)) = (left, right) {
                     match op {
                         Sub => return Ok(Value::from(a.checked_sub(b).ok_or(Error::IntegerOverflow { op: "-" })?)),
                         Mul => return Ok(Value::from(a.checked_mul(b).ok_or(Error::IntegerOverflow { op: "*" })?)),
@@ -269,11 +275,11 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                         // overflow (it checks against the quotient) and panics in
                         // every profile, so it has to go through checked_rem too
                         Mod => return Ok(Value::from(a.checked_rem(b).ok_or(Error::IntegerOverflow { op: "%" })?)),
-                        // Div and Pow are always float: 5 / 2 is 2.5, not 2
+                        // Div is always float: 5 / 2 is 2.5, not 2
                         _ => {}
                     }
                 }
-                let (a, b) = (ln.as_f64(), rn.as_f64());
+                let (a, b) = (left.as_f64(), right.as_f64());
                 let res = match op {
                     Sub => a - b,
                     Mul => a * b,
@@ -289,12 +295,17 @@ impl<'a, R: VariableResolver> Evaluator<'a, R> {
                         }
                         a % b
                     }
-                    Pow => a.powf(b),
                     _ => unreachable!(),
                 };
                 Ok(Value::from(res))
             }
         }
+    }
+
+    /// Like the other arithmetic operators, but always float, as `/` is.
+    fn power(&self, base: Value, exponent: Value) -> Result<Value> {
+        let (base, exponent) = (self.context.to_number(&base)?, self.context.to_number(&exponent)?);
+        Ok(Value::from(base.as_f64().powf(exponent.as_f64())))
     }
 }
 

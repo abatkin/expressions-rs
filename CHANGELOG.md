@@ -4,7 +4,8 @@
 
 ### Behavior changes
 
-- Expressions may nest at most 64 levels deep (`parser::DEFAULT_MAX_DEPTH`); deeper input is a parse error. Nesting deep enough used to overflow the stack and abort the process: about 140 chained operators in a debug build on a 2 MiB thread, or 1,000 nested brackets on the main thread. Chained operators count, so an inline sum of more than 64 terms is now refused.
+- Expressions may nest at most 64 levels deep (`parser::DEFAULT_MAX_DEPTH`); deeper input is a parse error. Nesting deep enough used to overflow the stack and abort the process: about 140 chained operators in a debug build on a 2 MiB thread, or 1,000 nested brackets on the main thread. A run of operators at one precedence, however long, counts as one level.
+- `Expr::Binary` holds a whole run of operators at one precedence (`first`, then `rest` as operator and operand pairs) instead of a single operation, and `^` has its own `Expr::Power`. `BinaryOp::Pow` is gone. Long runs are parsed, evaluated, cloned, and dropped without recursing per operator.
 - Inside `${...}`, a `}` in a comment closes the interpolation, so a comment there can no longer contain one (see Fixed).
 - `a <= b` parses as `BinaryOp::Le` instead of being rewritten to `b >= a`, so operands are evaluated left to right again.
 

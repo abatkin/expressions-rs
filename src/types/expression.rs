@@ -6,11 +6,33 @@ pub enum Expr {
     Var(String),
     ListLiteral(Vec<Expr>),
     DictLiteral(Vec<(Expr, Expr)>),
-    Member { object: Box<Expr>, field: String },
-    Index { object: Box<Expr>, index: Box<Expr> },
-    Call { callee: Box<Expr>, args: Vec<Expr> },
-    Unary { op: UnaryOp, expr: Box<Expr> },
-    Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
+    Member {
+        object: Box<Expr>,
+        field: String,
+    },
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: Box<Expr>,
+    },
+    /// Operators of one precedence, applied left to right: `a - b + c` is
+    /// `first: a, rest: [(Sub, b), (Add, c)]`.
+    Binary {
+        first: Box<Expr>,
+        rest: Vec<(BinaryOp, Expr)>,
+    },
+    /// `^`, applied right to left: `a ^ b ^ c` is `bases: [a, b], exponent: c`.
+    Power {
+        bases: Vec<Expr>,
+        exponent: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,5 +56,4 @@ pub enum BinaryOp {
     Mul,
     Div,
     Mod,
-    Pow,
 }

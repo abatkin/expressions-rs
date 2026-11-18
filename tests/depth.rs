@@ -31,8 +31,6 @@ fn nested(depth: usize) -> Vec<(&'static str, String, bool)> {
         ("parens", format!("{}1{}", "(".repeat(n), ")".repeat(n)), true),
         ("list", format!("{}1{}", "[".repeat(n), "]".repeat(n)), true),
         ("dict", format!("{}1{}", "{'a': ".repeat(n), "}".repeat(n)), true),
-        ("pow", format!("1{}", "^1".repeat(n)), true),
-        ("add", format!("1{}", "+1".repeat(n)), true),
         ("neg", format!("{}1", "-".repeat(n)), true),
         ("not", format!("{}x", "!".repeat(n)), true),
         ("member", format!("x{}", ".a".repeat(n)), false),
@@ -76,18 +74,34 @@ fn far_past_the_limit_is_a_parse_error_not_a_crash() {
 
 #[test]
 fn the_limit_can_be_raised_and_lowered() {
-    let deep = nested(200).into_iter().find(|c| c.0 == "add").unwrap().1;
+    let deep = format!("{}1", "-".repeat(199));
     assert!(parse_expression(&deep).is_err());
     let raised = ParseOptions::default().with_max_depth(200);
     let value = on_stack(64 * 1024 * 1024, move || {
         let expr = parse_expression_with(&deep, &raised).unwrap();
         simple_expressions::evaluator::Evaluator::new(&Vars).evaluate(&expr).unwrap().to_string()
     });
-    assert_eq!(value, "200");
+    assert_eq!(value, "-1");
 
     let lowered = ParseOptions::default().with_max_depth(2);
     assert!(Template::parse_with("${1 + 2}", &lowered).is_ok());
-    assert!(Template::parse_with("${1 + 2 + 3}", &lowered).is_err());
+    assert!(Template::parse_with("${1 + 2 * 3}", &lowered).is_err());
     // the limit applies to each expression on its own
     assert!(Template::parse_with("${1 + 2} ${1 + 2}", &lowered).is_ok());
+}
+
+#[test]
+fn long_binary_chains_on_a_small_stack() {
+    on_stack(SMALL, || {
+        let source = format!("x{}", "+x".repeat(19_999));
+        let template = Template::parse(&format!("${{{source}}}")).unwrap();
+        assert_eq!(template.clone().evaluate(&Vars).unwrap(), "20000");
+
+        let powers = format!("1{}", "^1".repeat(20_000));
+        assert_eq!(evaluate(&powers, &Vars).unwrap().to_string(), "1");
+
+        // alternating precedence is the path that recurses
+        let mixed = format!("x{}", "+x*x^x".repeat(10_000));
+        assert_eq!(evaluate(&mixed, &Vars).unwrap().to_string(), "10001");
+    });
 }

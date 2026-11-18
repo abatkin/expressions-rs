@@ -2,8 +2,7 @@ use crate::types::error::{Error, Result};
 use crate::types::expression::{BinaryOp, Expr, UnaryOp};
 use crate::types::primitive::Primitive;
 use pest::error::{Error as PestError, ErrorVariant, InputLocation, LineColLocation};
-use pest::iterators::Pair;
-use pest::pratt_parser::{Assoc, Op, PrattParser};
+use pest::iterators::{Pair, Pairs};
 use pest::{Parser, Position, Span};
 
 #[derive(pest_derive::Parser)]
@@ -124,26 +123,23 @@ pub const DEFAULT_MAX_DEPTH: usize = 64;
 ///
 /// let shallow = ParseOptions::default().with_max_depth(3);
 /// assert!(parse_expression_with("1 + 2", &shallow).is_ok());
-/// assert!(parse_expression_with("1 + 2 + 3 + 4", &shallow).is_err());
+/// assert!(parse_expression_with("(((1)))", &shallow).is_err());
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ParseOptions {
     /// The deepest an expression may nest; [`DEFAULT_MAX_DEPTH`] unless changed.
     ///
-    /// Depth counts levels from the top of an expression to its deepest part. A
-    /// literal or a variable is one level, and each operator, unary `-` or `!`,
-    /// `.field`, `[index]`, call, list, dictionary, and pair of parentheses adds
-    /// one around what it contains. Chained operators nest too: `a + b + c` is
-    /// `(a + b) + c`, three levels deep. Parsing fails with
-    /// [`Error::ParseError`] at the first point that goes past the limit.
+    /// Literals and variables have depth one. A run of binary operators at
+    /// one precedence level adds one to its deepest operand. For example,
+    /// `a + b - c` has depth two and `a + b * c` has depth three.
+    /// Each unary or postfix operation, list, dictionary, and pair of
+    /// parentheses adds one level. Parsing fails with [`Error::ParseError`]
+    /// at the first point past the limit.
     ///
-    /// The limit exists because parsing, evaluating, and dropping an expression
-    /// each recurse once per level, so a deep enough input -- `((((…))))`, or
-    /// `1^1^1^…` -- would overflow the stack and abort the process. The default
-    /// leaves ample room on a 2 MiB thread, Rust's default for spawned threads,
-    /// even in an unoptimized build; raise it only for threads with the stack to
-    /// match.
+    /// Parsing, evaluating, and dropping recurse once per level, so the limit
+    /// keeps deep input from overflowing the stack. The default fits a 2 MiB
+    /// thread in a debug build. Raise it only on threads with the stack to match.
     pub max_depth: usize,
 }
 
@@ -183,15 +179,17 @@ pub(crate) fn parse_internal(origin: Origin, rule: Rule, options: &ParseOptions)
     Ok((expr, end_pos))
 }
 
-fn pratt() -> PrattParser<Rule> {
-    PrattParser::new()
-        .op(Op::infix(Rule::op_or, Assoc::Left))
-        .op(Op::infix(Rule::op_and, Assoc::Left))
-        .op(Op::infix(Rule::op_eq, Assoc::Left))
-        .op(Op::infix(Rule::op_cmp, Assoc::Left))
-        .op(Op::infix(Rule::op_add, Assoc::Left))
-        .op(Op::infix(Rule::op_mul, Assoc::Left))
-        .op(Op::infix(Rule::op_pow, Assoc::Right))
+fn precedence(rule: Rule) -> u8 {
+    match rule {
+        Rule::op_or => 1,
+        Rule::op_and => 2,
+        Rule::op_eq => 3,
+        Rule::op_cmp => 4,
+        Rule::op_add => 5,
+        Rule::op_mul => 6,
+        Rule::op_pow => 7,
+        _ => unreachable!("expected a binary operator"),
+    }
 }
 
 /// An expression and its depth, counted as [`ParseOptions::max_depth`] counts it.
@@ -226,40 +224,50 @@ impl Builder<'_> {
             return Err(Error::InternalParserError(format!("expected expr, got: {:?}", pair)));
         }
         self.check(outer + 1, &pair)?;
-        let pairs = pair.into_inner();
+        let mut pairs = pair.into_inner();
+        // Built at `outer`, a lower bound: it may yet end up beneath an operator.
+        let mut left = self.unary(pairs.next().expect("first operand"), outer)?;
+        while let Some(op) = pairs.peek() {
+            left = self.binary_group(left, &mut pairs, precedence(op.as_rule()), outer)?;
+        }
+        Ok(left)
+    }
 
-        // pest's Pratt parser recurses once per operator in a run of
-        // right-associative `^`, before any of them reaches `map_infix` to be
-        // counted. Such a run nests one level per operator anyway, so refusing a
-        // long one here is the same check, made before it can overflow. Runs of
-        // other operators recurse at most once per precedence level.
-        let mut run = 0;
-        for p in pairs.clone() {
-            match p.as_rule() {
-                Rule::op_pow => {
-                    run += 1;
-                    self.check(outer + run + 1, &p)?;
-                }
-                Rule::unary => {}
-                _ => run = 0,
+    /// Precedence climbing: consumes every operator at `level` that follows
+    /// `first`, folding any tighter-binding run into its right operand. Recursion
+    /// only climbs to tighter levels, so it is at most seven deep.
+    fn binary_group(&self, (first, first_depth): Built, pairs: &mut Pairs<Rule>, level: u8, outer: usize) -> Result<Built> {
+        let mut depth = first_depth + 1;
+        // Refuse at the first operator, before building anything to its right.
+        self.check(outer + depth, &pairs.peek().expect("an operator at `level`"))?;
+        let mut rest = Vec::new();
+        while let Some(op) = pairs.peek() {
+            if precedence(op.as_rule()) != level {
+                break;
             }
+            pairs.next();
+            let mut right = self.unary(pairs.next().expect("right operand"), outer + 1)?;
+            while let Some(next) = pairs.peek() {
+                let next_level = precedence(next.as_rule());
+                if next_level <= level {
+                    break;
+                }
+                right = self.binary_group(right, pairs, next_level, outer + 1)?;
+            }
+            depth = depth.max(right.1 + 1);
+            self.check(outer + depth, &op)?;
+            rest.push((op, right.0));
         }
 
-        pratt()
-            .map_primary(|p: Pair<Rule>| self.unary(p, outer))
-            .map_infix(|lhs: Result<Built>, op: Pair<Rule>, rhs: Result<Built>| {
-                let (left, left_depth) = lhs?;
-                let (right, right_depth) = rhs?;
-                let depth = 1 + left_depth.max(right_depth);
-                self.check(outer + depth, &op)?;
-                let expr = Expr::Binary {
-                    left: Box::new(left),
-                    op: binary_op(&op)?,
-                    right: Box::new(right),
-                };
-                Ok((expr, depth))
-            })
-            .parse(pairs)
+        let expr = if level == precedence(Rule::op_pow) {
+            let mut bases: Vec<Expr> = std::iter::once(first).chain(rest.into_iter().map(|(_, operand)| operand)).collect();
+            let exponent = bases.pop().expect("at least one operator");
+            Expr::Power { bases, exponent: Box::new(exponent) }
+        } else {
+            let rest = rest.into_iter().map(|(op, operand)| Ok((binary_op(&op)?, operand))).collect::<Result<_>>()?;
+            Expr::Binary { first: Box::new(first), rest }
+        };
+        Ok((expr, depth))
     }
 
     fn unary(&self, pair: Pair<Rule>, outer: usize) -> Result<Built> {
@@ -422,7 +430,6 @@ fn binary_op(op: &Pair<Rule>) -> Result<BinaryOp> {
             "/" => BinaryOp::Div,
             _ => BinaryOp::Mod,
         },
-        Rule::op_pow => BinaryOp::Pow,
         r => return Err(Error::InternalParserError(format!("unexpected infix op: {:?}", r))),
     })
 }
@@ -638,9 +645,9 @@ mod tests {
             ("(1)", 2),
             ("((1))", 3),
             ("a + b", 2),
-            ("a + b + c", 3),
+            ("a + b + c", 2),
             ("1 + 2 * 3", 3),
-            ("2 ^ 3 ^ 4", 3),
+            ("2 ^ 3 ^ 4", 2),
             ("x.a.b", 3),
             ("x[0]", 2),
             ("f(a)(b)", 3),
@@ -669,9 +676,10 @@ mod tests {
             other => panic!("expected a parse error, got: {:?}", other),
         };
         // ........................0123456789012
-        assert_eq!(failure("1 + 2 + 3 + 4"), (10, "expression is nested too deeply (the limit is 3 levels)".to_string()));
+        assert_eq!(failure("1 + 2 * 3 ^ 4"), (10, "expression is nested too deeply (the limit is 3 levels)".to_string()));
+        // ....................012345678
+        assert_eq!(failure("[[1]] ^ 2").0, 6);
         assert_eq!(failure("[[[1]]]").0, 3);
-        assert_eq!(failure("1^1^1^1").0, 5);
         assert_eq!(failure("---1").0, 3);
         // ....................0123456
         assert_eq!(failure("x.a.b.c").0, 5);
@@ -683,9 +691,39 @@ mod tests {
     /// runs (and fails) first.
     #[test]
     fn less_or_equal_keeps_its_operand_order() {
-        let var = |name: &str| Box::new(Expr::Var(name.to_string()));
         for (src, op) in [("a <= b", BinaryOp::Le), ("a >= b", BinaryOp::Ge), ("a < b", BinaryOp::Lt), ("a > b", BinaryOp::Gt)] {
-            assert_eq!(parse_expression(src).unwrap(), Expr::Binary { left: var("a"), op, right: var("b") }, "input: {:?}", src);
+            assert_eq!(parse_expression(src).unwrap(), binary(var("a"), vec![(op, var("b"))]), "input: {:?}", src);
+        }
+    }
+
+    fn var(name: &str) -> Expr {
+        Expr::Var(name.to_string())
+    }
+
+    fn binary(first: Expr, rest: Vec<(BinaryOp, Expr)>) -> Expr {
+        Expr::Binary { first: Box::new(first), rest }
+    }
+
+    fn power(bases: Vec<Expr>, exponent: Expr) -> Expr {
+        Expr::Power { bases, exponent: Box::new(exponent) }
+    }
+
+    /// A run of operators at one precedence is one node, however long.
+    #[test]
+    fn binary_operators_group_by_precedence() {
+        use BinaryOp::*;
+        let cases = [
+            ("a + b", binary(var("a"), vec![(Add, var("b"))])),
+            ("a - b + c", binary(var("a"), vec![(Sub, var("b")), (Add, var("c"))])),
+            ("a * b + c", binary(binary(var("a"), vec![(Mul, var("b"))]), vec![(Add, var("c"))])),
+            ("a + b * c - d", binary(var("a"), vec![(Add, binary(var("b"), vec![(Mul, var("c"))])), (Sub, var("d"))])),
+            ("a ^ b", power(vec![var("a")], var("b"))),
+            ("a ^ b ^ c", power(vec![var("a"), var("b")], var("c"))),
+            ("a * b ^ c", binary(var("a"), vec![(Mul, power(vec![var("b")], var("c")))])),
+            ("a || b && c", binary(var("a"), vec![(Or, binary(var("b"), vec![(And, var("c"))]))])),
+        ];
+        for (src, expected) in cases {
+            assert_eq!(parse_expression(src).unwrap(), expected, "input: {:?}", src);
         }
     }
 }

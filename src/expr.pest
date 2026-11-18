@@ -24,7 +24,7 @@ program        = { SOI ~ expr ~ EOI }
 //   after the push would fail on leading whitespace, already skipped by then.
 delimited_expr = { PUSH_LITERAL("}") ~ expr ~ POP }
 
-// Expressions and precedence (operators are recognized by Pratt in Rust)
+// Expressions and precedence (the builder groups binary operators by precedence)
 expr        = { unary ~ ( (op_or | op_and | op_eq | op_cmp | op_add | op_mul | op_pow) ~ unary )* }
 
 unary       = { unary_op* ~ postfix }
