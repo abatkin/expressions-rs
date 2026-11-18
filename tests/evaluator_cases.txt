@@ -20,6 +20,35 @@ true || !true => true
 10 % 3 => 1
 2 ^ 3 => 8
 
+# Comparisons
+1 < 2 => true
+2 < 1 => false
+1 <= 1 => true
+1 <= 2 => true
+2 <= 1 => false
+1.5 <= 1 => false
+1 >= 1 => true
+1 >= 2 => false
+2 > 1 => true
+'a' <= 'b' => true
+'b' <= 'a' => false
+'a' <= 'a' => true
+1 <= 1.0 => true
+!(1 <= 0) => true
+1 <= 2 == 2 >= 1 => true
+9007199254740992 <= 9007199254740993 => true
+9007199254740993 <= 9007199254740992 => false
+
+# Comments run to the end of the line; "//" inside a string is not one
+4 / 2 => 2
+4 // 2 => 4
+1 + 2 // a comment } with a brace => 3
+"it's" // don't => it's
+'a // b' => a // b
+"//" // a comment => //
+'http://example.com' + "//x" => http://example.com//x
+'a  b' => a  b
+
 "xy" => xy
 'x' + 'y' => xy
 
@@ -96,9 +125,14 @@ add(2, 3) => 5
 {"a": 1, "b": 2} == {"a": 1, "b": 3} => false
 {"a": 1, "b": 2} != {"a": 1, "b": 2} => false
 {"a": 1, "b": 2} != {"a": 1, "b": 3} => true
+{'linux': 'https://linux.example.com/tool', 'macos': 'https://mac.example.com/tool'}['linux'] => https://linux.example.com/tool
 
 # Allow trailing commas
 {"a": 1, "b": 2,} == {"a": 1, "b": 2} => true
+
+#### Comments
+1 + 2 // + 4 => 3
+1 + 2 // + 4 } + 5 => 3
 
 
 #### Custom Objects

@@ -3,9 +3,9 @@
 A small expression language with variables, function calls, simple types and common operators.
 
 - Literals
-  - Integers: sequence of digits, optionally with a leading '-'.
-  - Floats: digits with a decimal point, optionally with a leading '-'.
-  - Strings: delimited by single ' or double " quotes. Supported escapes: \n, \r, \t, \\, \", \\'. Newlines are not allowed inside strings unless escaped as a backslash followed by a newline (\\ + newline).
+  - Integers: a sequence of digits, which must fit in a 64-bit signed integer. A literal never includes a sign: `-5` is unary minus applied to `5`. One consequence is that the most negative integer, -9223372036854775808, cannot be written as a literal, because 9223372036854775808 is out of range.
+  - Floats: digits with a decimal point and digits on both sides (`1.5`), a leading point (`.5`), or an exponent (`1e10`, `1.5e-3`, `2E+4`). `1.` is not a float. As with integers, a leading '-' is unary minus.
+  - Strings: delimited by single ' or double " quotes. The only escapes are `\n` (newline), `\\` (backslash), and the string's own quote character (`\'` in a single-quoted string, `\"` in a double-quoted one). Any other escape, including `\r`, `\t`, and the other kind of quote, is a parse error. Raw line breaks are allowed inside strings and are kept as written.
   - Booleans: true, false.
 - Collections
   - Lists: [expr, expr, ...]
@@ -15,7 +15,14 @@ A small expression language with variables, function calls, simple types and com
     - Example: {"a": 1, "b": 2}, {"a"+"b": 3}
 - Whitespace and comments
   - Any spaces, tabs, or newlines are ignored.
-  - Line comments start with // and continue to the end of the line.
+  - Line comments start with // and continue to the end of the line. Inside `${ ... }` a comment also ends at the first `}`, which closes the interpolation, so a comment there cannot contain a `}`. In
+
+    ```
+    ${ x + // add {y} later
+       1 }
+    ```
+
+    the `}` after `{y` closes the interpolation, leaving `x +` with nothing after it: a parse error.
 - Grouping
   - Parentheses ( ... ) group sub-expressions.
 - Identifiers, variables and functions
@@ -57,6 +64,10 @@ A small expression language with variables, function calls, simple types and com
   - `$${` produces a literal `${`, so "$${x}" yields "${x}" (before 0.5.0 it yielded `$` followed by the value of `x`). Any other `$` is literal text.
   - `Template::parse(...)` parses once and reports syntax errors up front; the template can then be evaluated many times. `evaluate_rendered(...)` takes a closure that turns each value into text, e.g. to reject lists.
   - Evaluation and rendering failures are `Error::InterpolationFailed`, which says which `${ ... }` failed.
+- Nesting limit (library API)
+  - An expression may nest at most 64 levels deep. A literal or variable is one level, and each operator, unary `-` or `!`, `.field`, `[index]`, call, list, dictionary, and pair of parentheses adds one. Chained operators count too: `a + b + c` is `(a + b) + c`, three levels.
+  - Deeper input is a parse error rather than a stack overflow that aborts the process. pest matches brackets before the limit is checked, though, so for brackets nested far past it the error comes from pest's own stack guard ("stack limit reached"). That guard is automatic only on the x86_64 and aarch64 `-unknown-linux-gnu`, `-apple-darwin` and `-pc-windows-msvc` targets. Elsewhere, including musl Linux and windows-gnu, enable this crate's `stack-guard` feature or bound the input's length.
+  - Change the limit with `ParseOptions::default().with_max_depth(n)`, passed to `parse_expression_with(...)` (then evaluate with `Evaluator`) or `Template::parse_with(...)`; in a template it applies to each `${ ... }` separately. Raise it only on threads with the stack to match: the default fits a 2 MiB thread even in a debug build.
 
 Built-in members and functions
 

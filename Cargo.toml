@@ -1,6 +1,6 @@
 [package]
 name = "simple-expressions"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -14,5 +14,12 @@ categories = ["template-engine", "compilers", "parser-implementations"]
 
 [dependencies]
 thiserror = "2"
-pest = "2.8"
-pest_derive = "2.8"
+pest = "2.9.5"
+pest_derive = { version = "2.9.5", features = ["grammar-extras"] }
+
+[features]
+# Probe the native stack while parsing on targets where pest does not do so by
+# default (it does only on x86_64/aarch64 -unknown-linux-gnu, -apple-darwin and
+# -pc-windows-msvc; not on musl or windows-gnu, for example). Needs a toolchain
+# supported by the `stacker` and `psm` crates.
+stack-guard = ["pest/stack-guard"]

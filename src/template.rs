@@ -59,6 +59,12 @@ impl Template {
     /// rather than in the expression the error occurred in. A `${` with no
     /// matching `}` is a parse error.
     pub fn parse(input: &str) -> Result<Template> {
+        Self::parse_with(input, &parser::ParseOptions::default())
+    }
+
+    /// As [`Template::parse`], with the given limits, which apply to each
+    /// `${...}` separately.
+    pub fn parse_with(input: &str, options: &parser::ParseOptions) -> Result<Template> {
         let mut segments = Vec::new();
         let mut literal = String::new();
         let mut pos = 0;
@@ -85,7 +91,7 @@ impl Template {
             // they would be relative to the slice, earlier and possibly on the
             // wrong line.
             let start = dollar + 2;
-            let (expr, consumed) = parser::parse_internal(parser::Origin::fragment(input, start), parser::Rule::delimited_expr)?;
+            let (expr, consumed) = parser::parse_internal(parser::Origin::fragment(input, start), parser::Rule::delimited_expr, options)?;
             let end = start + consumed;
             segments.push(Segment::Expression { expr, span: dollar..end });
             pos = end;
@@ -306,6 +312,27 @@ mod tests {
     fn multibyte_text_around_expressions() {
         let t = Template::parse("é$${é}${name}ü").unwrap();
         assert_eq!(t.evaluate(&Vars).unwrap(), "é${é}worldü");
+    }
+
+    /// A comment inside `${...}` ends at the closing "}" as well as at a line
+    /// break. Without that it swallowed the delimiter, and then either failed to
+    /// parse or silently ate template text up to some later "}".
+    #[test]
+    fn comments_end_at_the_closing_brace() {
+        assert_eq!(eval("a ${x // note} b"), "a 10 b");
+        assert_eq!(eval("a ${x // note} b\n} c"), "a 10 b\n} c");
+        assert_eq!(eval("${x // note\n}"), "10");
+        assert_eq!(eval("${x + // note\n 1}"), "11");
+        // the first "}" ends it, even one meant as part of the comment
+        assert_eq!(eval("${x // a } b}"), "10 b}");
+        // and a "}" in a string is not a delimiter
+        assert_eq!(eval("${'//}' // c}"), "//}");
+        // including a comment that opens the interpolation, before any expression
+        assert_eq!(eval("a ${// note\nx} b"), "a 10 b");
+        assert_eq!(eval("a ${ // note\nx} b"), "a 10 b");
+        // ..........................01234567890
+        assert_eq!(parse_failure("a ${// c} lost\nx} b"), (1, 9, 8));
+        assert_eq!(parse_failure("a ${ // c} lost\nx} b"), (1, 10, 9));
     }
 
     #[test]

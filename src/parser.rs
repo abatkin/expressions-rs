@@ -114,19 +114,72 @@ pub(crate) fn line_col(text: &str, offset: usize) -> (usize, usize) {
     (before.matches('\n').count() + 1, before[line_start..].chars().count() + 1)
 }
 
+/// How deeply an expression may nest, unless [`ParseOptions`] says otherwise.
+pub const DEFAULT_MAX_DEPTH: usize = 64;
+
+/// Limits applied while parsing an expression or a template.
+///
+/// ```
+/// use simple_expressions::parser::{parse_expression_with, ParseOptions};
+///
+/// let shallow = ParseOptions::default().with_max_depth(3);
+/// assert!(parse_expression_with("1 + 2", &shallow).is_ok());
+/// assert!(parse_expression_with("1 + 2 + 3 + 4", &shallow).is_err());
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ParseOptions {
+    /// The deepest an expression may nest; [`DEFAULT_MAX_DEPTH`] unless changed.
+    ///
+    /// Depth counts levels from the top of an expression to its deepest part. A
+    /// literal or a variable is one level, and each operator, unary `-` or `!`,
+    /// `.field`, `[index]`, call, list, dictionary, and pair of parentheses adds
+    /// one around what it contains. Chained operators nest too: `a + b + c` is
+    /// `(a + b) + c`, three levels deep. Parsing fails with
+    /// [`Error::ParseError`] at the first point that goes past the limit.
+    ///
+    /// The limit exists because parsing, evaluating, and dropping an expression
+    /// each recurse once per level, so a deep enough input -- `((((…))))`, or
+    /// `1^1^1^…` -- would overflow the stack and abort the process. The default
+    /// leaves ample room on a 2 MiB thread, Rust's default for spawned threads,
+    /// even in an unoptimized build; raise it only for threads with the stack to
+    /// match.
+    pub max_depth: usize,
+}
+
+impl ParseOptions {
+    /// These options with [`ParseOptions::max_depth`] set to `max_depth`.
+    pub fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self { max_depth: DEFAULT_MAX_DEPTH }
+    }
+}
+
 pub fn parse_expression(input: &str) -> Result<Expr> {
-    parse_internal(Origin::whole(input), Rule::program).map(|r| r.0)
+    parse_expression_with(input, &ParseOptions::default())
+}
+
+/// As [`parse_expression`], with the given limits.
+pub fn parse_expression_with(input: &str, options: &ParseOptions) -> Result<Expr> {
+    parse_internal(Origin::whole(input), Rule::program, options).map(|r| r.0)
 }
 
 /// Returns the expression and how far into [`Origin::text`] the parse consumed.
-pub(crate) fn parse_internal(origin: Origin, rule: Rule) -> Result<(Expr, usize)> {
+pub(crate) fn parse_internal(origin: Origin, rule: Rule, options: &ParseOptions) -> Result<(Expr, usize)> {
     let mut pairs = InnerParser::parse(rule, origin.text()).map_err(|e| origin.convert(e))?;
     let pair = pairs.next().expect("program always produces one pair");
 
     debug_assert_eq!(pair.as_rule(), rule);
     let end_pos = pair.as_span().end_pos().pos();
     let expr_pair = pair.into_inner().next().expect("program contains expr");
-    let expr = parse_expr(expr_pair, origin)?;
+    let builder = Builder { origin, max_depth: options.max_depth };
+    let (expr, _) = builder.expr(expr_pair, 0)?;
     Ok((expr, end_pos))
 }
 
@@ -141,170 +194,237 @@ fn pratt() -> PrattParser<Rule> {
         .op(Op::infix(Rule::op_pow, Assoc::Right))
 }
 
-fn parse_expr(pair: Pair<Rule>, origin: Origin) -> Result<Expr> {
-    match pair.as_rule() {
-        Rule::expr => {
-            let pairs = pair.into_inner();
-            pratt()
-                .map_primary(|p: Pair<Rule>| parse_unary(p, origin))
-                .map_infix(|lhs: Result<Expr>, op: Pair<Rule>, rhs: Result<Expr>| {
-                    let left = lhs?;
-                    let right = rhs?;
-                    let mut l = left;
-                    let mut r = right;
-                    let bop = match op.as_rule() {
-                        Rule::op_or => BinaryOp::Or,
-                        Rule::op_and => BinaryOp::And,
-                        Rule::op_eq => {
-                            let s = op.as_str();
-                            if s.contains("==") { BinaryOp::Eq } else { BinaryOp::Ne }
-                        }
-                        Rule::op_cmp => {
-                            let s = op.as_str();
-                            if s.contains("<=") {
-                                // a <= b  ==>  b >= a
-                                std::mem::swap(&mut l, &mut r);
-                                BinaryOp::Ge
-                            } else if s.contains(">=") {
-                                BinaryOp::Ge
-                            } else if s.contains('<') {
-                                BinaryOp::Lt
-                            } else {
-                                BinaryOp::Gt
-                            }
-                        }
-                        Rule::op_add => {
-                            if op.as_str().contains('-') {
-                                BinaryOp::Sub
-                            } else {
-                                BinaryOp::Add
-                            }
-                        }
-                        Rule::op_mul => {
-                            let s = op.as_str();
-                            if s.contains('*') {
-                                BinaryOp::Mul
-                            } else if s.contains('/') {
-                                BinaryOp::Div
-                            } else {
-                                BinaryOp::Mod
-                            }
-                        }
-                        Rule::op_pow => BinaryOp::Pow,
-                        r => {
-                            return Err(Error::InternalParserError(format!("unexpected infix op: {:?}", r)));
-                        }
-                    };
-                    Ok(Expr::Binary {
-                        left: Box::new(l),
-                        op: bop,
-                        right: Box::new(r),
-                    })
-                })
-                .parse(pairs)
-        }
-        _ => Err(Error::InternalParserError(format!("expected expr, got: {:?}", pair))),
-    }
+/// An expression and its depth, counted as [`ParseOptions::max_depth`] counts it.
+type Built = (Expr, usize);
+
+/// Turns pest's parse tree into an [`Expr`], enforcing the depth limit.
+///
+/// Each method takes `outer`, how many levels are known to enclose its pair, and
+/// returns the depth of what it built. `outer` is a lower bound -- an operand
+/// cannot know how many operators will end up above it -- so `outer + depth`
+/// never overstates the true depth, which makes checking it at every node safe;
+/// at the root `outer` is 0 and the check is exact. Checking on the way down as
+/// well is what bounds this code's own recursion: a nested bracket is refused as
+/// soon as it is entered, not after recursing to the bottom of it.
+struct Builder<'a> {
+    origin: Origin<'a>,
+    max_depth: usize,
 }
 
-fn parse_unary(pair: Pair<Rule>, origin: Origin) -> Result<Expr> {
-    match pair.as_rule() {
-        Rule::unary => {
-            let mut ops: Vec<UnaryOp> = Vec::new();
-            let mut inner = pair.into_inner();
-            // Collect zero or more unary_op then the postfix expression
-            while let Some(next) = inner.peek() {
-                if !matches!(next.as_rule(), Rule::unary_op) {
-                    break;
+impl Builder<'_> {
+    /// Fails, at `pair`, if something `depth` levels deep would exceed the limit.
+    fn check(&self, depth: usize, pair: &Pair<Rule>) -> Result<()> {
+        if depth > self.max_depth {
+            let message = format!("expression is nested too deeply (the limit is {} levels)", self.max_depth);
+            return Err(self.origin.at(pair.as_span().start(), message));
+        }
+        Ok(())
+    }
+
+    fn expr(&self, pair: Pair<Rule>, outer: usize) -> Result<Built> {
+        if pair.as_rule() != Rule::expr {
+            return Err(Error::InternalParserError(format!("expected expr, got: {:?}", pair)));
+        }
+        self.check(outer + 1, &pair)?;
+        let pairs = pair.into_inner();
+
+        // pest's Pratt parser recurses once per operator in a run of
+        // right-associative `^`, before any of them reaches `map_infix` to be
+        // counted. Such a run nests one level per operator anyway, so refusing a
+        // long one here is the same check, made before it can overflow. Runs of
+        // other operators recurse at most once per precedence level.
+        let mut run = 0;
+        for p in pairs.clone() {
+            match p.as_rule() {
+                Rule::op_pow => {
+                    run += 1;
+                    self.check(outer + run + 1, &p)?;
                 }
-                let op_pair = inner.next().unwrap();
-                let op_inner = op_pair.into_inner().next().unwrap();
-                let op = match op_inner.as_rule() {
-                    Rule::not_op => UnaryOp::Not,
-                    Rule::neg_op => UnaryOp::Neg,
-                    r => {
-                        return Err(Error::InternalParserError(format!("unexpected unary op: {:?}", r)));
-                    }
+                Rule::unary => {}
+                _ => run = 0,
+            }
+        }
+
+        pratt()
+            .map_primary(|p: Pair<Rule>| self.unary(p, outer))
+            .map_infix(|lhs: Result<Built>, op: Pair<Rule>, rhs: Result<Built>| {
+                let (left, left_depth) = lhs?;
+                let (right, right_depth) = rhs?;
+                let depth = 1 + left_depth.max(right_depth);
+                self.check(outer + depth, &op)?;
+                let expr = Expr::Binary {
+                    left: Box::new(left),
+                    op: binary_op(&op)?,
+                    right: Box::new(right),
                 };
-                ops.push(op);
-            }
-            let post = inner.next().expect("unary must end with postfix");
-            let mut expr = parse_postfix(post, origin)?;
-            for op in ops.into_iter().rev() {
-                expr = Expr::Unary { op, expr: Box::new(expr) };
-            }
-            Ok(expr)
-        }
-        _ => parse_postfix(pair, origin),
+                Ok((expr, depth))
+            })
+            .parse(pairs)
     }
-}
 
-fn parse_postfix(pair: Pair<Rule>, origin: Origin) -> Result<Expr> {
-    match pair.as_rule() {
-        Rule::postfix => {
-            let mut inner = pair.into_inner();
-            let first = inner.next().expect("postfix starts with primary");
-            let mut expr = parse_primary(first, origin)?;
-            for next in inner {
-                match next.as_rule() {
-                    Rule::call => {
-                        let args = parse_call_args(next, origin)?;
-                        expr = Expr::Call { callee: Box::new(expr), args };
-                    }
-                    Rule::index => {
-                        let idx_pair = next.into_inner().next().expect("index inner expr");
-                        let index_expr = parse_expr(idx_pair, origin)?;
-                        expr = Expr::Index {
-                            object: Box::new(expr),
-                            index: Box::new(index_expr),
-                        };
-                    }
-                    Rule::property => {
-                        let name = next.into_inner().next().expect("property ident").as_str().to_string();
-                        expr = Expr::Member { object: Box::new(expr), field: name };
-                    }
-                    r => {
-                        return Err(Error::InternalParserError(format!("unexpected postfix op: {:?}", r)));
-                    }
+    fn unary(&self, pair: Pair<Rule>, outer: usize) -> Result<Built> {
+        if pair.as_rule() != Rule::unary {
+            return self.postfix(pair, outer);
+        }
+        let at = pair.clone();
+        let mut ops: Vec<UnaryOp> = Vec::new();
+        let mut inner = pair.into_inner();
+        // Collect zero or more unary_op then the postfix expression
+        while let Some(next) = inner.peek() {
+            if !matches!(next.as_rule(), Rule::unary_op) {
+                break;
+            }
+            let op_pair = inner.next().unwrap();
+            let op_inner = op_pair.into_inner().next().unwrap();
+            let op = match op_inner.as_rule() {
+                Rule::not_op => UnaryOp::Not,
+                Rule::neg_op => UnaryOp::Neg,
+                r => {
+                    return Err(Error::InternalParserError(format!("unexpected unary op: {:?}", r)));
+                }
+            };
+            ops.push(op);
+        }
+        let post = inner.next().expect("unary must end with postfix");
+        // The operand is beneath every operator.
+        let (mut expr, depth) = self.postfix(post, outer + ops.len())?;
+        let depth = depth + ops.len();
+        self.check(outer + depth, &at)?;
+        for op in ops.into_iter().rev() {
+            expr = Expr::Unary { op, expr: Box::new(expr) };
+        }
+        Ok((expr, depth))
+    }
+
+    fn postfix(&self, pair: Pair<Rule>, outer: usize) -> Result<Built> {
+        if pair.as_rule() != Rule::postfix {
+            return self.primary(pair, outer);
+        }
+        let mut inner = pair.into_inner();
+        let (mut expr, mut depth) = self.primary(inner.next().expect("postfix starts with primary"), outer)?;
+        // Each operation wraps everything to its left, one level above the deeper
+        // of that and its own arguments.
+        for op in inner {
+            let at = op.clone();
+            match op.as_rule() {
+                Rule::call => {
+                    let (args, args_depth) = self.exprs(op.into_inner(), outer + 1)?;
+                    depth = depth.max(args_depth);
+                    expr = Expr::Call { callee: Box::new(expr), args };
+                }
+                Rule::index => {
+                    let (index, index_depth) = self.expr(op.into_inner().next().expect("index inner expr"), outer + 1)?;
+                    depth = depth.max(index_depth);
+                    expr = Expr::Index {
+                        object: Box::new(expr),
+                        index: Box::new(index),
+                    };
+                }
+                Rule::property => {
+                    let name = op.into_inner().next().expect("property ident").as_str().to_string();
+                    expr = Expr::Member { object: Box::new(expr), field: name };
+                }
+                r => {
+                    return Err(Error::InternalParserError(format!("unexpected postfix op: {:?}", r)));
                 }
             }
-            Ok(expr)
+            depth += 1;
+            self.check(outer + depth, &at)?;
         }
-        _ => parse_primary(pair, origin),
+        Ok((expr, depth))
+    }
+
+    fn primary(&self, pair: Pair<Rule>, outer: usize) -> Result<Built> {
+        self.check(outer + 1, &pair)?;
+        let origin = self.origin;
+        match pair.as_rule() {
+            Rule::primary => self.primary(pair.into_inner().next().unwrap(), outer),
+            // Parentheses add no node, but they count as a level: pest recurses
+            // through them like any other bracket, so a limit that skipped them
+            // would leave `((((…))))` to pest's stack guard.
+            Rule::parens => {
+                let (expr, depth) = self.expr(pair.into_inner().next().unwrap(), outer + 1)?;
+                Ok((expr, depth + 1))
+            }
+            Rule::ident => Ok((Expr::Var(pair.as_str().to_string()), 1)),
+            Rule::number => Ok((parse_number(pair, origin)?, 1)),
+            Rule::boolean => {
+                let inner = pair.into_inner().next().unwrap();
+                let val = matches!(inner.as_rule(), Rule::true_kw);
+                Ok((Expr::Literal(Primitive::Bool(val)), 1))
+            }
+            Rule::string => {
+                let s = unescape_string(&pair, origin)?;
+                Ok((Expr::Literal(Primitive::Str(s)), 1))
+            }
+            Rule::list => {
+                let (elems, depth) = self.exprs(pair.into_inner(), outer + 1)?;
+                Ok((Expr::ListLiteral(elems), depth + 1))
+            }
+            Rule::dict => self.dict(pair, outer),
+            r => Err(Error::InternalParserError(format!("unexpected primary op: {:?}", r))),
+        }
+    }
+
+    fn dict(&self, pair: Pair<Rule>, outer: usize) -> Result<Built> {
+        let mut items = Vec::new();
+        let mut depth = 0;
+        for p in pair.into_inner().filter(|p| p.as_rule() == Rule::pair) {
+            let mut it = p.into_inner();
+            let (key, key_depth) = self.expr(it.next().expect("pair key"), outer + 1)?;
+            let (value, value_depth) = self.expr(it.next().expect("pair value"), outer + 1)?;
+            depth = depth.max(key_depth).max(value_depth);
+            items.push((key, value));
+        }
+        Ok((Expr::DictLiteral(items), depth + 1))
+    }
+
+    /// Builds every `expr` among `pairs`, skipping punctuation, each `outer` levels
+    /// deep. Returns them with the greatest of their depths (0 if there are none).
+    fn exprs<'i>(&self, pairs: impl Iterator<Item = Pair<'i, Rule>>, outer: usize) -> Result<(Vec<Expr>, usize)> {
+        let mut exprs = Vec::new();
+        let mut depth = 0;
+        for p in pairs.filter(|p| p.as_rule() == Rule::expr) {
+            let (expr, expr_depth) = self.expr(p, outer)?;
+            depth = depth.max(expr_depth);
+            exprs.push(expr);
+        }
+        Ok((exprs, depth))
     }
 }
 
-fn parse_call_args(pair: Pair<Rule>, origin: Origin) -> Result<Vec<Expr>> {
-    debug_assert_eq!(pair.as_rule(), Rule::call);
-    let mut args = Vec::new();
-    for p in pair.into_inner() {
-        // call contains expr separated by commas -> grammar emits only expr pairs inside
-        if matches!(p.as_rule(), Rule::expr) {
-            args.push(parse_expr(p, origin)?);
+fn binary_op(op: &Pair<Rule>) -> Result<BinaryOp> {
+    Ok(match op.as_rule() {
+        Rule::op_or => BinaryOp::Or,
+        Rule::op_and => BinaryOp::And,
+        Rule::op_eq => {
+            if op.as_str() == "==" {
+                BinaryOp::Eq
+            } else {
+                BinaryOp::Ne
+            }
         }
-    }
-    Ok(args)
-}
-
-fn parse_primary(pair: Pair<Rule>, origin: Origin) -> Result<Expr> {
-    match pair.as_rule() {
-        Rule::primary => parse_primary(pair.into_inner().next().unwrap(), origin),
-        Rule::parens => parse_expr(pair.into_inner().next().unwrap(), origin),
-        Rule::ident => Ok(Expr::Var(pair.as_str().to_string())),
-        Rule::number => parse_number(pair, origin),
-        Rule::boolean => {
-            let inner = pair.into_inner().next().unwrap();
-            let val = matches!(inner.as_rule(), Rule::true_kw);
-            Ok(Expr::Literal(Primitive::Bool(val)))
+        Rule::op_cmp => match op.as_str() {
+            "<=" => BinaryOp::Le,
+            ">=" => BinaryOp::Ge,
+            "<" => BinaryOp::Lt,
+            _ => BinaryOp::Gt,
+        },
+        Rule::op_add => {
+            if op.as_str() == "-" {
+                BinaryOp::Sub
+            } else {
+                BinaryOp::Add
+            }
         }
-        Rule::string => {
-            let s = unescape_string(&pair, origin)?;
-            Ok(Expr::Literal(Primitive::Str(s)))
-        }
-        Rule::list => parse_list(pair, origin),
-        Rule::dict => parse_dict(pair, origin),
-        r => Err(Error::InternalParserError(format!("unexpected primary op: {:?}", r))),
-    }
+        Rule::op_mul => match op.as_str() {
+            "*" => BinaryOp::Mul,
+            "/" => BinaryOp::Div,
+            _ => BinaryOp::Mod,
+        },
+        Rule::op_pow => BinaryOp::Pow,
+        r => return Err(Error::InternalParserError(format!("unexpected infix op: {:?}", r))),
+    })
 }
 
 fn parse_number(pair: Pair<Rule>, origin: Origin) -> Result<Expr> {
@@ -322,31 +442,6 @@ fn parse_number(pair: Pair<Rule>, origin: Origin) -> Result<Expr> {
         }
         r => Err(Error::InternalParserError(format!("unexpected number: {:?}", r))),
     }
-}
-
-fn parse_list(pair: Pair<Rule>, origin: Origin) -> Result<Expr> {
-    let mut elems = Vec::new();
-    for p in pair.into_inner() {
-        if let Rule::expr = p.as_rule() {
-            elems.push(parse_expr(p, origin)?);
-        }
-    }
-    Ok(Expr::ListLiteral(elems))
-}
-
-fn parse_dict(pair: Pair<Rule>, origin: Origin) -> Result<Expr> {
-    let mut items = Vec::new();
-    for p in pair.into_inner() {
-        if let Rule::pair = p.as_rule() {
-            let mut it = p.into_inner();
-            let key_pair = it.next().expect("pair key expr");
-            let key = parse_expr(key_pair, origin)?;
-            let value_pair = it.next().expect("pair value expr");
-            let value = parse_expr(value_pair, origin)?;
-            items.push((key, value));
-        }
-    }
-    Ok(Expr::DictLiteral(items))
 }
 
 fn unescape_string(pair: &Pair<Rule>, origin: Origin) -> Result<String> {
@@ -388,7 +483,7 @@ mod tests {
     #[test]
     fn test_interpolated_expr() {
         let input = "123}x";
-        let (expr, idx) = parse_internal(Origin::whole(input), Rule::delimited_expr).unwrap();
+        let (expr, idx) = parse_internal(Origin::whole(input), Rule::delimited_expr, &ParseOptions::default()).unwrap();
         assert_eq!(expr, Expr::Literal(Primitive::Int(123)));
         assert_eq!(idx, 4);
     }
@@ -447,9 +542,8 @@ mod tests {
     }
 
     /// Narrowing `NEWLINE` must not change what a string literal holds. A raw line
-    /// break inside one is preserved either way: `string` is not an atomic rule, so
-    /// before the change `WHITESPACE` skipped it and now `string_char` matches it,
-    /// and `unescape_string` reads the raw span regardless.
+    /// break inside one is matched by `string_char` (`string` is atomic, so
+    /// `WHITESPACE` never runs inside it), and `unescape_string` reads the raw span.
     #[test]
     fn raw_line_breaks_in_string_literals_are_preserved() {
         for (input, expected) in [("'a\rb'", "a\rb"), ("'a\nb'", "a\nb")] {
@@ -516,5 +610,82 @@ mod tests {
         let (line, column, offset, message) = parse_failure(r"'a\tb'");
         assert_eq!((line, column, offset), (1, 3, 2));
         assert_eq!(message, r"unknown escape sequence: \t");
+    }
+
+    #[test]
+    fn test_comments_in_string() {
+        let expr = parse_expression("'a // not a comment'").unwrap();
+        assert_eq!(expr, Expr::Literal(Primitive::Str("a // not a comment".to_string())));
+    }
+
+    /// Outside an interpolation there is no "}" to stop at, so a comment still runs
+    /// to the end of the line.
+    #[test]
+    fn top_level_comments_do_not_end_at_a_brace() {
+        assert_eq!(parse_expression("1 // a } b").unwrap(), Expr::Literal(Primitive::Int(1)));
+        assert_eq!(parse_expression("{'a': 1 // }\n}").unwrap(), parse_expression("{'a': 1}").unwrap());
+    }
+
+    /// Depth as `ParseOptions::max_depth` documents it: each input parses at
+    /// exactly its own depth and fails one below.
+    #[test]
+    fn depth_counts_every_level() {
+        for (input, depth) in [
+            ("1", 1),
+            ("x", 1),
+            ("-1", 2),
+            ("!!x", 3),
+            ("(1)", 2),
+            ("((1))", 3),
+            ("a + b", 2),
+            ("a + b + c", 3),
+            ("1 + 2 * 3", 3),
+            ("2 ^ 3 ^ 4", 3),
+            ("x.a.b", 3),
+            ("x[0]", 2),
+            ("f(a)(b)", 3),
+            ("f(a + b)", 3),
+            ("-(x[0])", 4),
+            ("[]", 1),
+            ("[1, [2]]", 3),
+            ("{}", 1),
+            ("{'a': [1]}", 3),
+            ("{[1]: 2}", 3),
+        ] {
+            let at = |max_depth| parse_expression_with(input, &ParseOptions::default().with_max_depth(max_depth));
+            assert!(at(depth).is_ok(), "{:?} should fit in {}: {:?}", input, depth, at(depth));
+            assert!(at(depth - 1).is_err(), "{:?} should not fit in {}", input, depth - 1);
+        }
+    }
+
+    /// The error points into the part of the expression that goes past the limit:
+    /// the operator or postfix operation for a chain of them, otherwise the deepest
+    /// part.
+    #[test]
+    fn too_deep_points_into_the_part_past_the_limit() {
+        let shallow = ParseOptions::default().with_max_depth(3);
+        let failure = |input: &str| match parse_expression_with(input, &shallow).unwrap_err() {
+            Error::ParseError { offset, message, .. } => (offset, message),
+            other => panic!("expected a parse error, got: {:?}", other),
+        };
+        // ........................0123456789012
+        assert_eq!(failure("1 + 2 + 3 + 4"), (10, "expression is nested too deeply (the limit is 3 levels)".to_string()));
+        assert_eq!(failure("[[[1]]]").0, 3);
+        assert_eq!(failure("1^1^1^1").0, 5);
+        assert_eq!(failure("---1").0, 3);
+        // ....................0123456
+        assert_eq!(failure("x.a.b.c").0, 5);
+        assert_eq!(failure("f(1)(2)(3)").0, 7);
+    }
+
+    /// `a <= b` must stay `a <= b`, not become `b >= a`: the tree is public, and
+    /// operands are evaluated left to right, so swapping them changes which side
+    /// runs (and fails) first.
+    #[test]
+    fn less_or_equal_keeps_its_operand_order() {
+        let var = |name: &str| Box::new(Expr::Var(name.to_string()));
+        for (src, op) in [("a <= b", BinaryOp::Le), ("a >= b", BinaryOp::Ge), ("a < b", BinaryOp::Lt), ("a > b", BinaryOp::Gt)] {
+            assert_eq!(parse_expression(src).unwrap(), Expr::Binary { left: var("a"), op, right: var("b") }, "input: {:?}", src);
+        }
     }
 }

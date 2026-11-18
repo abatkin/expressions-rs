@@ -7,6 +7,10 @@ use crate::types::primitive::Primitive;
 use crate::types::value::Value;
 use crate::types::{dict, list};
 
+/// Parse `input` and evaluate it.
+///
+/// Parses with the default [`parser::ParseOptions`]; for other limits, parse with
+/// [`parser::parse_expression_with`] and evaluate the result with an [`Evaluator`].
 pub fn evaluate<T: VariableResolver>(input: &str, resolver: &T) -> Result<Value> {
     evaluate_with(input, resolver, &STANDARD)
 }
@@ -22,7 +26,8 @@ pub fn evaluate_with<T: VariableResolver>(input: &str, resolver: &T, coercions: 
 /// Replace each `${...}` in `input` with the value of the expression inside it.
 ///
 /// Parses and evaluates in one call; use [`Template`] to parse once and evaluate
-/// later or repeatedly. `$${` produces a literal `${`.
+/// later or repeatedly. `$${` produces a literal `${`. Parses with the default
+/// [`parser::ParseOptions`]; for other limits use [`Template::parse_with`].
 pub fn evaluate_interpolations<T: VariableResolver>(input: &str, resolver: &T) -> Result<String> {
     evaluate_interpolations_with(input, resolver, &STANDARD)
 }
@@ -310,43 +315,27 @@ mod tests {
     }
     impl VariableResolver for MockResolver {
         fn resolve(&self, key: &str) -> Option<Value> {
-            if key == "x" {
-                return Some(Value::from(10i64));
-            }
-            if key == "truth" {
-                return Some(Value::from(true));
-            }
-            // names that a boolean literal is a prefix of: legal identifiers, and
-            // only reachable because the literals carry a word boundary
-            if key == "trueish" {
-                return Some(Value::from(1i64));
-            }
-            if key == "false_value" {
-                return Some(Value::from(2i64));
-            }
-            if key == "math.add" || key == "add" {
-                let f = function::new(Rc::new(|args: &[Value], cx: &Context| -> Result<Value> {
+            match key {
+                "hi" => Some(Value::from("hello")),
+                "x" => Some(Value::from(10i64)),
+                "truth" => Some(Value::from(true)),
+                // names that a boolean literal is a prefix of: legal identifiers, and
+                // only reachable because the literals carry a word boundary
+                "trueish" => Some(Value::from(1i64)),
+                "false_value" => Some(Value::from(2i64)),
+                "math.add" | "add" => Some(function::new(Rc::new(|args: &[Value], cx: &Context| -> Result<Value> {
                     if args.len() != 2 {
                         return Err(Error::EvaluationFailed("need 2 args".into()));
                     }
                     // goes through the active policy, not a hardcoded conversion
                     Ok(Value::from(cx.to_number(&args[0])?.as_f64() + cx.to_number(&args[1])?.as_f64()))
-                }));
-                return Some(f);
+                }))),
+                "global" => Some(Value::Object(Rc::new(MockGlobal {}))),
+                "epoch" => Some(Value::Object(Rc::new(IntOnly(100)))),
+                "big" => Some(Value::Object(Rc::new(IntOnly(9007199254740992)))),
+                "bigger" => Some(Value::Object(Rc::new(IntOnly(9007199254740993)))),
+                _ => None,
             }
-            if key == "global" {
-                return Some(Value::Object(Rc::new(MockGlobal {})));
-            }
-            if key == "epoch" {
-                return Some(Value::Object(Rc::new(IntOnly(100))));
-            }
-            if key == "big" {
-                return Some(Value::Object(Rc::new(IntOnly(9007199254740992))));
-            }
-            if key == "bigger" {
-                return Some(Value::Object(Rc::new(IntOnly(9007199254740993))));
-            }
-            None
         }
     }
 
