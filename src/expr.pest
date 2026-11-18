@@ -5,12 +5,26 @@ WHITESPACE = _{ " " | "\t" | NEWLINE }
 // parser thinks it is on. This definition shadows the builtin -- removing it does
 // not fall back to something equivalent.
 NEWLINE     = _{ "\r\n" | "\n" }
-COMMENT     = _{ "//" ~ (!NEWLINE ~ ANY)* }
+// Inside `${...}` a comment must also end at the closing "}", or it swallows
+// the delimiter -- and with it the template text up to some later "}". So
+// `delimited_expr` pushes "}" and COMMENT stops at whatever is on top of the
+// stack. `program` pushes nothing, so there a comment runs to the end of the
+// line: this is `PEEK[-1..]` rather than `PEEK` because a slice past the bottom
+// of the stack fails to match, where `PEEK` on an empty stack panics. `string`
+// pushes too, but it is atomic, so no comment is ever tried inside one.
+COMMENT     = _{ "//" ~ (!(NEWLINE | PEEK[-1..]) ~ ANY)* }
 
 program        = { SOI ~ expr ~ EOI }
-delimited_expr = { SOI ~ expr ~ "}" }
+// Pushes the "}" that COMMENT stops at, then consumes it with POP.
+// - PUSH_LITERAL (from `grammar-extras`), because PUSH would consume a "}" here.
+// - The push comes first: pest skips whitespace and comments between any two
+//   items of a sequence, so a comment opening the interpolation (`${// c\n x}`)
+//   would otherwise run before the push, see an empty stack, and swallow "}".
+// - No SOI: parsing always starts at the fragment's start anyway, and an SOI
+//   after the push would fail on leading whitespace, already skipped by then.
+delimited_expr = { PUSH_LITERAL("}") ~ expr ~ POP }
 
-// Expressions and precedence (operators are recognized by Pratt in Rust)
+// Expressions and precedence (the builder groups binary operators by precedence)
 expr        = { unary ~ ( (op_or | op_and | op_eq | op_cmp | op_add | op_mul | op_pow) ~ unary )* }
 
 unary       = { unary_op* ~ postfix }
@@ -47,8 +61,10 @@ boolean     = { true_kw | false_kw }
 true_kw     = @{ "true" ~ !ident_cont }
 false_kw    = @{ "false" ~ !ident_cont }
 
-string        = { PUSH( "\"" | "'" ) ~ string_char* ~ POP }
-string_char   = @{ quoted_escape | (!(PEEK | NEWLINE) ~ ANY) }
+// Atomic so the implicit WHITESPACE and COMMENT rules are never tried between
+// characters: otherwise "//" inside a literal would be swallowed as a comment.
+string        = @{ PUSH( "\"" | "'" ) ~ string_char* ~ POP }
+string_char   = @{ quoted_escape | (!PEEK ~ ANY) }
 quoted_escape = @{ "\\n" | "\\\\" | "\\" ~ PEEK }
 
 // Collections

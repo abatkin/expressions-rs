@@ -5,3 +5,20 @@ a$${x} => a${x}
 $$${x} => $${x}
 a$b$$c$ => a$b$$c$
 ${x}$${x}${x} => 10${x}10
+
+Say ${hi} => Say hello
+Say ${"hi"} => Say hi
+Say ${"Hello" + "World"} => Say HelloWorld
+Say ${"Hello//" + "World"} => Say Hello//World
+Say ${"Hello//}" + "World"} => Say Hello//}World
+
+# Inside `${...}` a comment ends at the first "}", not just at a line break
+a ${x // note} b => a 10 b
+a ${x //} b => a 10 b
+${x // a } b} => 10 b}
+${x // it's} => 10
+${x // "} => 10
+${'//}' // c} => //}
+${'}'} => }
+${"}"} => }
+${'${x}'} => ${x}

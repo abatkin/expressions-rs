@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.0 Nesting limit, parser fixes
+
+### Behavior changes
+
+- Expressions may nest at most 64 levels deep (`parser::DEFAULT_MAX_DEPTH`); deeper input is a parse error. Nesting deep enough used to overflow the stack and abort the process: about 140 chained operators in a debug build on a 2 MiB thread, or 1,000 nested brackets on the main thread. A run of operators at one precedence, however long, counts as one level.
+- `Expr::Binary` holds a whole run of operators at one precedence (`first`, then `rest` as operator and operand pairs) instead of a single operation, and `^` has its own `Expr::Power`. `BinaryOp::Pow` is gone. Long runs are parsed, evaluated, cloned, and dropped without recursing per operator.
+- Inside `${...}`, a `}` in a comment closes the interpolation, so a comment there can no longer contain one (see Fixed).
+- `a <= b` parses as `BinaryOp::Le` instead of being rewritten to `b >= a`, so operands are evaluated left to right again.
+
+### Added
+
+- `parser::ParseOptions`, with `parse_expression_with` and `Template::parse_with`, to change the nesting limit.
+- A `stack-guard` feature, which turns on pest's native stack probing on targets where it is not automatic.
+
+### Fixed
+
+- `//` inside a string literal is no longer read as a comment.
+- Inside `${...}`, a comment ends at the closing `}` as well as at a line break. It used to swallow the `}`, then fail to parse or silently drop template text up to a later `}`.
+- The README's description of string escapes and integer literals matches the parser.
+
+### Dependencies
+
+- Requires pest 2.9.5 or later, for its native stack guard, and enables `pest_derive`'s `grammar-extras` feature.
+
 ## 0.5.0 Parsed templates, `$${` escape
 
 ### Behavior changes
